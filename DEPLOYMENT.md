@@ -6,7 +6,7 @@ Target: `https://colossus.astra-via.com`, Google project `astra-via` (4188934400
 
 `.github/workflows/cloud-run.yml` checks pull requests and deploys successful pushes to `main`. Manual dispatch on `main` supports check-only runs and an optional deployment. Tests run without real credentials or billable model calls. The workflow builds the non-root container once, smoke-tests that image, and transfers that same checked image between jobs. Cloud deployment uses GitHub OIDC federation rather than a service-account key. Deployments are serialized.
 
-The `production` environment permits only branch `main`. The federation provider checks repository ID `1403699159`, owner ID `316705827`, branch `refs/heads/main`, the exact production environment subject and `.github/workflows/cloud-run.yml` workflow reference. Pull requests and other repositories cannot impersonate the deployment identity.
+The `production` environment permits only branch `main`. The federation provider checks repository ID `1403699159`, owner ID `316705827`, branch `refs/heads/main`, the exact immutable production subject `repo:Astra-via-Omer@316705827/astra-colossus@1403699159:environment:production` and the `workflow_ref` for `.github/workflows/cloud-run.yml`. Pull requests and other repositories cannot impersonate the deployment identity.
 
 - Federation provider: `projects/418893440067/locations/global/workloadIdentityPools/astra-colossus-github/providers/github`
 - Deploy identity: `astra-colossus-deploy@astra-via.iam.gserviceaccount.com`
