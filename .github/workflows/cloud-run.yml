@@ -1,0 +1,90 @@
+name: Colossus — check and deploy
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: Deploy the checked Colossus image to the existing Astra cloud project
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: colossus-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+      - run: npm test
+      - run: docker build -t "astra-colossus:$GITHUB_SHA" .
+      - name: Smoke test the packaged runtime
+        run: |
+          docker run --detach --name colossus-smoke --publish 127.0.0.1:4002:8080 --env COLOSSUS_ORIGIN=https://colossus.astra-via.com --env 'ASTRA_PROVIDER_CONFIG_JSON={"key":"synthetic-ci-key","model":"synthetic-ci-model"}' "astra-colossus:$GITHUB_SHA"
+          trap 'docker rm --force colossus-smoke >/dev/null' EXIT
+          curl --fail --retry 10 --retry-delay 1 --retry-connrefused http://127.0.0.1:4002/healthz
+          curl --fail --silent -H 'Authorization: Bearer synthetic-ci-key' http://127.0.0.1:4002/v1/models | python3 -c 'import json,sys; assert any(x["id"] == "astra-default" for x in json.load(sys.stdin)["data"])'
+      - name: Save checked image
+        if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || inputs.deploy)
+        run: docker save "astra-colossus:$GITHUB_SHA" | gzip > "$RUNNER_TEMP/colossus.tar.gz"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || inputs.deploy)
+        with:
+          name: colossus-${{ github.sha }}
+          path: ${{ runner.temp }}/colossus.tar.gz
+          retention-days: 1
+          compression-level: 0
+  deploy:
+    needs: check
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || inputs.deploy)
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: colossus-${{ github.sha }}
+          path: ${{ runner.temp }}/colossus
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db
+      - name: Push checked image
+        env:
+          PROJECT: ${{ vars.GCP_PROJECT_ID }}
+          REGION: ${{ vars.GCP_REGION }}
+          REPOSITORY: ${{ vars.GCP_ARTIFACT_REPOSITORY }}
+        run: |
+          docker load --input "$RUNNER_TEMP/colossus/colossus.tar.gz"
+          gcloud auth configure-docker "$REGION-docker.pkg.dev" --quiet
+          docker tag "astra-colossus:$GITHUB_SHA" "$REGION-docker.pkg.dev/$PROJECT/$REPOSITORY/astra-colossus:$GITHUB_SHA"
+          docker push "$REGION-docker.pkg.dev/$PROJECT/$REPOSITORY/astra-colossus:$GITHUB_SHA"
+      - uses: google-github-actions/deploy-cloudrun@2028e2d7d30a78c6910e0632e48dd561b064884d
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          service: astra-colossus
+          region: ${{ vars.GCP_REGION }}
+          image: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GCP_ARTIFACT_REPOSITORY }}/astra-colossus:${{ github.sha }}
+          flags: '--ingress=internal-and-cloud-load-balancing --no-invoker-iam-check --timeout=300 --concurrency=16 --min-instances=0 --max-instances=10 --memory=512Mi --service-account=${{ vars.GCP_RUNTIME_SERVICE_ACCOUNT }}'
+          env_vars: |
+            COLOSSUS_ORIGIN=https://colossus.astra-via.com
+            COLOSSUS_MAX_INFLIGHT=16
+            COLOSSUS_ENGINE_BUCKET=${{ vars.COLOSSUS_ENGINE_BUCKET }}
+            SUPABASE_URL=${{ vars.SUPABASE_URL }}
+            SUPABASE_ANON_KEY=${{ vars.SUPABASE_ANON_KEY }}
+          secrets: |
+            ASTRA_PROVIDER_CONFIG_JSON=astra-provider-config:${{ vars.ASTRA_PROVIDER_SECRET_VERSION }}
