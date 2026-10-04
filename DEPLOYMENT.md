@@ -21,7 +21,7 @@ Required repository variables: `GCP_PROJECT_ID`, `GCP_REGION`, `GCP_ARTIFACT_REP
 
 ## Runtime and engine storage
 
-One Node 22 process per instance; 512 MiB memory, 16 concurrent operations, a 300-second Cloud Run timeout, zero minimum instances and a maximum of ten instances. Colossus imposes its own 90-second inference deadline. The service accepts internal/load-balancer ingress, with the Cloud Run IAM invoker check disabled so the public console is reachable through the load balancer. Every inference/engine operation still requires a service key or server-verified account.
+One Node 22 process per instance; 512 MiB memory, 16 concurrent operations, a 300-second Cloud Run timeout, zero minimum instances and a maximum of ten instances. Colossus imposes its own 90-second inference deadline. The service accepts internal/load-balancer ingress. The cloud administrator disables its IAM invoker check once after first deployment so the public console is reachable through the load balancer; subsequent GitHub deployments preserve that setting. The deployment identity cannot change IAM policies. Every inference/engine operation still requires a service key or server-verified account.
 
 Engine bucket: `gs://astra-via-colossus-engines-418893440067`, region `me-west1`, uniform bucket access and public-access prevention. Runtime roles: Storage Object Viewer and Storage Object Creator; no overwrite/delete rights. Engine publication uses a generation-zero write precondition. All instances read the same immutable definitions. No Supabase migration is required for the deployed configuration. The optional `database/004_colossus_engines.sql` is retained for installations choosing Supabase storage instead.
 
