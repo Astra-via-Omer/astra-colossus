@@ -32,6 +32,9 @@ jobs:
           docker run --detach --name colossus-smoke --publish 127.0.0.1:4002:8080 --env COLOSSUS_ORIGIN=https://colossus.astra-via.com --env 'ASTRA_PROVIDER_CONFIG_JSON={"key":"synthetic-ci-key","model":"synthetic-ci-model"}' "astra-colossus:$GITHUB_SHA"
           trap 'docker logs colossus-smoke; docker rm --force colossus-smoke >/dev/null' EXIT
           curl --fail --retry 10 --retry-delay 1 --retry-all-errors http://127.0.0.1:4002/healthz
+          curl --fail --silent http://127.0.0.1:4002/ | python3 -c 'import sys; page=sys.stdin.read(); assert "welcome-login" in page and "id=\"run\"" not in page'
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' -H 'Authorization: Bearer synthetic-ci-key' http://127.0.0.1:4002/app)" = '303'
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' -H 'Authorization: Bearer synthetic-ci-key' http://127.0.0.1:4002/session)" = '401'
           curl --fail --silent -H 'Authorization: Bearer synthetic-ci-key' http://127.0.0.1:4002/v1/models | python3 -c 'import json,sys; assert any(x["id"] == "astra-default" for x in json.load(sys.stdin)["data"])'
       - name: Save checked image
         if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || inputs.deploy)

@@ -14,7 +14,11 @@ cp .env.example .env.local
 node --env-file=.env.local src/server.mjs
 ```
 
-Open http://localhost:4002. Sign in with the shared Supabase account when its URL and publishable key are configured, or connect with the existing service/provider key. Browser service keys remain in tab memory; account sessions use HttpOnly cookies, one-hour expiry, same-origin mutations and live disabled/role checks. Existing active admin, participant, reader and viewer accounts can run saved engines, matching Workflow's current permissions. Only admins can create/test/evaluate engine versions. Protected `app_metadata.colossus.enabled=false` revokes account access.
+Open http://localhost:4002 for the welcome page. Sign in with the same email and password used in Astra Workflow and Lab. `/app` is a server-protected engine room; service keys cannot open it or the browser user controls. Active shared admin, participant, reader and viewer accounts can run saved engines. Only admins can create/test/evaluate engine versions and manage shared user access. Protected `app_metadata.colossus.enabled=false`, disabled/banned/deleted accounts and unassigned roles deny entry.
+
+Browser sessions use opaque, host-only HttpOnly cookies with SameSite Strict, Secure in production and a maximum one-hour lifetime. The Supabase access token stays encrypted on the server, outside browser storage and API responses. Production sessions use private Cloud Storage shared across instances; development can use process memory. Expiry and logout are enforced server-side, including replay from another instance. The account backend checks current protected roles and enabled state on every protected request; the console also checks every 15 seconds and on focus. This release reuses the shared authentication backend; it does not add cross-domain single sign-on or a separate future JWT issuer.
+
+Admins can load/search existing accounts in **User access**, review a role or suspend/enable change, then confirm it. These changes affect the shared Astra account across services. Account creation/invitation remains in Workflow. Colossus calls the existing `astra_list_users_v2`, `astra_set_user_role` and `astra_set_user_disabled` functions with the signed-in admin's identity; it does not need a service-role credential for user management. Install Workflow's `database/003_user_roles.sql` if those functions are absent. Shared database safeguards reject invalid changes and protect active administrators. Your own account cannot be modified from Colossus.
 
 `COLOSSUS_API_KEYS_JSON` can supply independent service keys without changing the provider key. `COLOSSUS_ADMIN_KEY` separates admin service calls; when omitted, the shared service key has admin access. These keys are for trusted backend services. End-user interfaces should use account sign-in.
 
@@ -22,7 +26,7 @@ The separate Personal Workspace repository includes the optional `colossus` Comp
 
 ## Engines and evaluations
 
-The console includes **How to use**, a seven-step guide available before and after sign-in. It covers running sample evidence, interpreting and downloading results, defining and testing a draft, publishing immutable versions, and evaluating fixtures. Its shortcuts open the relevant controls. Loading the sample does not call a model and preserves non-empty evidence; you explicitly start each inference or evaluation. The guide also explains account permissions, common errors, backend integration and the current media limitations.
+The console includes **How to use**, a seven-step guide inside the signed-in engine room at `/app#guide`. It covers running sample evidence, interpreting and downloading results, defining and testing a draft, publishing immutable versions, and evaluating fixtures. Its shortcuts open the relevant controls. Loading the sample does not call a model and preserves non-empty evidence; you explicitly start each inference or evaluation. The guide also explains account permissions, common errors, backend integration and the current media limitations.
 
 Built-ins: `evidence-review@1.0.0` and `claim-check@1.0.0`. Engine creation publishes an immutable prompt-based engine manifest, not arbitrary executable code or a GPU model. Definitions specify `id`, `version`, `name`, `model`, `instruction` and `maxTokens`. The output contract is fixed to traceable claims and the current identity/support/reasoning rubric. Changing a definition requires a new version. Local creation uses an atomic private file; the deployed service uses an immutable Cloud Storage registry authenticated by its runtime identity. Alternatively, production creation can use the shared Supabase table from `database/004_colossus_engines.sql` and the existing server-side service-role secret. Production cannot save engine versions to an ephemeral local filesystem.
 
@@ -36,6 +40,10 @@ Authenticate with `Authorization: Bearer <service key or shared-account access t
 
 | Method | Path | Purpose |
 |---|---|---|
+| GET | `/` | Public welcome and account sign-in |
+| GET | `/app` | Account-only engine room; redirects signed-out/denied visitors |
+| POST / GET / DELETE | `/session` | Sign in, inspect current account, revoke browser session |
+| GET / PATCH | `/v1/access/users` | Account admin only: shared user list and reviewed role/state changes |
 | GET | `/healthz` | Liveness; no provider or database calls |
 | GET | `/v1/models` | Configured aliases and default provider model |
 | GET | `/v1/capabilities` | Model modalities, streaming, registry availability |
@@ -102,6 +110,6 @@ Set these as repository variables for the existing web deployment workflow after
 npm test
 ```
 
-The gateway suite covers authentication, revocations, CSRF, provider key isolation, switching providers, modality rejection, streaming, local/shared engine persistence, exact quotations, evaluations, overload, cancellation and sanitized errors. In the separate Personal Workspace repository, `scripts/check-colossus.cjs` drives the actual HTTP gateway from the current workspace's review stages using a synthetic provider. No real model key or paid inference is needed for these checks.
+The 18-test suite covers welcome/app separation, shared account roles, admin controls, logout replay, server expiry, encrypted cross-instance sessions, storage/auth outages, CSRF, provider key isolation, switching providers, modality rejection, streaming, local/shared engine persistence, exact quotations, evaluations, overload, cancellation and sanitized errors. In the separate Personal Workspace repository, `scripts/check-colossus.cjs` drives the actual HTTP gateway from the current workspace's review stages using a synthetic provider. No real model key or paid inference is needed for these checks.
 
 See [DEPLOYMENT.md](DEPLOYMENT.md) for the cloud and custom-domain steps.

@@ -34,7 +34,10 @@ export function configuration(env = process.env) {
     route.baseUrl = url.href.replace(/\/$/, '');
   }
   const origin = env.COLOSSUS_ORIGIN || `http://localhost:${env.PORT || 4002}`;
-  if (env.COLOSSUS_ENGINE_BUCKET && !/^[a-z0-9][a-z0-9.-]{1,220}[a-z0-9]$/.test(env.COLOSSUS_ENGINE_BUCKET)) throw Error('Invalid engine bucket');
+  for (const field of ['COLOSSUS_ENGINE_BUCKET', 'COLOSSUS_SESSION_BUCKET']) {
+    if (env[field] && !/^[a-z0-9][a-z0-9.-]{1,220}[a-z0-9]$/.test(env[field])) throw Error(`Invalid ${field}`);
+  }
+  if (env.COLOSSUS_SESSION_SECRET && env.COLOSSUS_SESSION_SECRET.length < 32) throw Error('COLOSSUS_SESSION_SECRET needs at least 32 characters');
   if (env.NODE_ENV === 'production' && !origin.startsWith('https://')) throw Error('Production needs an HTTPS COLOSSUS_ORIGIN');
   return { routes, keys, adminKey: env.COLOSSUS_ADMIN_KEY || '', origin,
     maxInflight: integer(env, 'COLOSSUS_MAX_INFLIGHT', 16, 1, 1000),
@@ -42,7 +45,9 @@ export function configuration(env = process.env) {
     bodyLimit: integer(env, 'COLOSSUS_BODY_LIMIT', 2000000, 1024, 16000000),
     supabaseUrl: env.SUPABASE_URL || '', anonKey: env.SUPABASE_ANON_KEY || '',
     serviceKey: env.SUPABASE_SERVICE_ROLE_KEY || '', engineFile: env.COLOSSUS_ENGINE_FILE || '',
-    engineBucket: env.COLOSSUS_ENGINE_BUCKET || '', production: env.NODE_ENV === 'production' };
+    engineBucket: env.COLOSSUS_ENGINE_BUCKET || '', sessionBucket: env.COLOSSUS_SESSION_BUCKET || env.COLOSSUS_ENGINE_BUCKET || '',
+    sessionSecret: env.COLOSSUS_SESSION_SECRET || providerKey || Object.values(routes)[0].key,
+    production: env.NODE_ENV === 'production' };
 }
 export function resolveRoute(config, model) {
   const route = Object.hasOwn(config.routes, model || 'astra-default') ? config.routes[model || 'astra-default'] : undefined;
