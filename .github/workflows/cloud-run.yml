@@ -82,7 +82,7 @@ jobs:
           service: astra-colossus
           region: ${{ vars.GCP_REGION }}
           image: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GCP_ARTIFACT_REPOSITORY }}/astra-colossus:${{ github.sha }}
-          flags: '--ingress=internal-and-cloud-load-balancing --timeout=300 --concurrency=16 --min-instances=0 --max-instances=10 --memory=512Mi --service-account=${{ vars.GCP_RUNTIME_SERVICE_ACCOUNT }}'
+          flags: '--ingress=internal-and-cloud-load-balancing --timeout=300 --concurrency=16 --min-instances=0 --max-instances=10 --max=10 --memory=512Mi --service-account=${{ vars.GCP_RUNTIME_SERVICE_ACCOUNT }}'
           env_vars: |
             COLOSSUS_ORIGIN=https://colossus.astra-via.com
             COLOSSUS_MAX_INFLIGHT=16
