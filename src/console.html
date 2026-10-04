@@ -1,7 +1,80 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Colossus · Astra Via</title><link rel="stylesheet" href="/console.css"><script src="/console.js" defer></script></head>
-<body><header><a class="brand" href="/">ASTRA VIA <span>COLOSSUS</span></a><nav><a href="https://lab.astra-via.com">Lab ↗</a><a href="https://workspace.astra-via.com">Workflow ↗</a></nav></header>
+<body><header><a class="brand" href="/">ASTRA VIA <span>COLOSSUS</span></a><nav><a href="#guide" data-guide-step="0">How to use</a><a href="https://lab.astra-via.com">Lab ↗</a><a href="https://workspace.astra-via.com">Workflow ↗</a></nav></header>
 <main><section class="intro"><p class="eyebrow">THE ENGINE LAYER</p><h1>One path.<br>Many ways to validate.</h1><p>Run evidence checks, test new engines, and route inference through one shared model connection.</p><div class="path"><span>Lab / Workflow</span><b>→</b><strong>Colossus</strong><b>→</b><span>Model providers</span></div></section>
+<details id="guide" class="card guide">
+<summary><span class="eyebrow">START HERE</span><span class="guide-title">How to use Colossus</span><span class="guide-summary">A step-by-step guide, from your first source to your own validation engine.</span></summary>
+<div class="guide-body">
+<p>Start with a small excerpt. An engine is a set of review instructions and a model route. Creating one does not train a new model.</p>
+<p class="guide-note">Reading this guide and loading examples makes no model calls. <strong>Run validation</strong>, <strong>Test draft</strong> and <strong>Run evaluation</strong> use the connected provider and its balance.</p>
+<ol id="guide-nav" class="guide-nav" aria-label="Guide steps">
+<li><button type="button" class="secondary" data-guide-step="0">1. Sign in</button></li>
+<li><button type="button" class="secondary" data-guide-step="1">2. Run a source</button></li>
+<li><button type="button" class="secondary" data-guide-step="2">3. Read the result</button></li>
+<li><button type="button" class="secondary" data-guide-step="3">4. Create a draft</button></li>
+<li><button type="button" class="secondary" data-guide-step="4">5. Test the draft</button></li>
+<li><button type="button" class="secondary" data-guide-step="5">6. Save a version</button></li>
+<li><button type="button" class="secondary" data-guide-step="6">7. Evaluate it</button></li>
+</ol>
+<p id="guide-progress" class="eyebrow" role="status" aria-live="polite"></p>
+<p id="guide-feedback" role="status" aria-live="polite"></p>
+<div id="guide-steps">
+<section class="guide-step" aria-labelledby="guide-sign-in">
+<h2 id="guide-sign-in" tabindex="-1">1. Sign in with your Astra account</h2>
+<ol><li>Find <strong>Sign in to your engine room</strong> below this guide.</li><li>Enter the same email and password you use for Astra Workflow or Lab, then select <strong>Sign in</strong>.</li><li>Wait for the engine room and its engine and model lists to appear.</li></ol>
+<p>You can run saved engines with an active admin, participant, reader or viewer account. Creating, testing and evaluating engines requires an admin. If those buttons are disabled, ask your Astra administrator for help.</p>
+<p>If your session expires, sign in again. Use <strong>Disconnect</strong> when you finish. Service keys are an alternative for trusted service operators; you do not need one for normal account sign-in.</p>
+<button type="button" class="secondary" data-guide-target="login">Go to sign-in</button>
+</section>
+<section class="guide-step" aria-labelledby="guide-run">
+<h2 id="guide-run" tabindex="-1">2. Run your first source</h2>
+<ol><li>In <strong>Validate a source</strong>, choose <strong>Evidence review · 1.0.0</strong>. Use <strong>Focused claim check</strong> when you want to focus on a specific question.</li><li>Give the document a <strong>Source ID</strong>, such as <code>measurement-2026</code>, and the excerpt a <strong>Section ID</strong>, such as <code>page-1</code>. Keep these IDs meaningful so you can trace the result back.</li><li>Paste the actual excerpt into <strong>Evidence</strong>. Start with a short paragraph; this form accepts one source section of up to 60,000 characters.</li><li>In <strong>Review focus</strong>, describe the question you want checked. For example: “Check the capacity claim and identify missing measurement conditions.”</li><li>Select <strong>Run validation</strong>, then look in <strong>Result</strong> below the forms.</li></ol>
+<div class="guide-example"><p class="eyebrow">TRY THIS EXAMPLE</p><blockquote>Measured capacity is 20 units in 2026.</blockquote><p>This example supplies a claim but no measurement method. Look for the model's assessment and proposed next check.</p><button type="button" class="secondary" id="guide-sample-source">Load sample evidence</button><p class="guide-hint">Loads the fields only when Evidence is empty. You choose when to run it.</p></div>
+</section>
+<section class="guide-step" aria-labelledby="guide-result">
+<h2 id="guide-result" tabindex="-1">3. Read and keep the result</h2>
+<ol><li>Open <strong>Result</strong>. The report is JSON: each item in <code>claims</code> is an accepted, traceable claim.</li><li>Check its <code>quote</code>, <code>sourceId</code> and <code>sectionId</code> against your original excerpt.</li><li>Read <code>assessment</code> for limitations and <code>nextCheck</code> for the evidence you should collect next.</li><li>Review <code>excluded</code> for claims rejected by quotation or rating checks. Correct the source or instructions if needed.</li><li>Select <strong>Download result</strong> to keep the report. Colossus does not store your source text, run results or evaluation reports for later retrieval.</li></ol>
+<dl class="guide-definitions"><dt>Identity, support and reasoning</dt><dd>Model-assigned scores from 0 to 2. Higher values mean the model assessed that dimension as stronger.</dd><dt>Importance</dt><dd>A score from 1 to 5 for decision impact, not confidence.</dd><dt>Gravity distance</dt><dd>An evidence-gap index from 0 to 100. Lower values mean smaller assessed gaps. It weights identity at 20%, support at 60% and reasoning at 20%.</dd><dt>Status: unverified</dt><dd>A matched quotation confirms traceability to your supplied text. It does not confirm that the source's claim is true.</dd></dl>
+<button type="button" class="secondary" data-guide-target="result">Go to results</button>
+</section>
+<section class="guide-step" aria-labelledby="guide-draft">
+<h2 id="guide-draft" tabindex="-1">4. Define your own engine</h2>
+<p class="guide-role">Admin step</p>
+<ol><li>In <strong>Make an engine your own</strong>, enter a readable <strong>Name</strong>, such as “Capacity evidence check”.</li><li>Choose an <strong>Engine ID</strong>, such as <code>capacity-check</code>. Use 2–64 lowercase letters, numbers and hyphens, starting with a letter.</li><li>Start with <strong>Version</strong> <code>1.0.0</code>. Choose a new ID if that ID and version already exist.</li><li>Select a configured <strong>Model route</strong>. Start with <code>astra-default</code>, the shared provider connection.</li><li>Write <strong>Instructions</strong> describing what to assess, which evidence matters and what gaps to identify. Put document content in Evidence, not here.</li><li>Keep the <strong>Output token limit</strong> at 4,000 to start. The allowed range is 256–8,000.</li></ol>
+<div class="guide-example"><p class="eyebrow">EXAMPLE INSTRUCTIONS</p><blockquote>Assess capacity claims using only the supplied sources. Identify the measured value, date and test conditions. Distinguish measurements from assumptions. Flag missing methods and propose the next evidence check.</blockquote></div>
+<p>Colossus supplies the claims output format automatically. Your instructions guide the review; they do not define a new output format.</p>
+<button type="button" class="secondary" data-guide-target="create">Go to engine creation</button>
+</section>
+<section class="guide-step" aria-labelledby="guide-test">
+<h2 id="guide-test" tabindex="-1">5. Test your draft before saving</h2>
+<p class="guide-role">Admin step</p>
+<ol><li>Keep your draft fields filled in <strong>Make an engine your own</strong>.</li><li>Fill the source and review focus in <strong>Validate a source</strong>. Draft testing uses those source fields and your draft instructions, regardless of the saved engine selected in the dropdown.</li><li>Select <strong>Test draft</strong>. This makes a provider call but does not save an engine version.</li><li>Review the result. Does it quote the source correctly, expose missing evidence and suggest a useful next check?</li><li>Refine the instructions and test with another representative excerpt. Download useful results before another run replaces them.</li></ol>
+<p>Try both a well-supported source and one with missing evidence. A useful engine should make limitations explicit in both.</p>
+<button type="button" class="secondary" data-guide-target="test-draft">Go to draft testing</button>
+</section>
+<section class="guide-step" aria-labelledby="guide-save">
+<h2 id="guide-save" tabindex="-1">6. Save and select an engine version</h2>
+<p class="guide-role">Admin step</p>
+<ol><li>Once you are satisfied with the draft, check its ID, version, model route and instructions.</li><li>Select <strong>Save engine version</strong>. Saving publishes its definition to the shared registry without making an inference call.</li><li>Look for <strong>Engine version saved.</strong> in Result. The new version becomes selected in <strong>Engine version</strong>.</li><li>Run the saved version on a source to check the published definition.</li><li>Select <strong>Export manifest</strong> if you want a local JSON copy of the definition in your draft fields.</li></ol>
+<p>Saved versions cannot be edited or overwritten. When you change instructions, a model route or the token limit, save a new version, such as <code>1.0.1</code>. Keep the ID to group versions of the same engine. To return to an older version, select it from the dropdown.</p>
+<button type="button" class="secondary" data-guide-target="save-engine">Go to publishing</button>
+</section>
+<section class="guide-step" aria-labelledby="guide-evaluate">
+<h2 id="guide-evaluate" tabindex="-1">7. Evaluate a saved version</h2>
+<p class="guide-role">Admin step</p>
+<ol><li>Choose the saved version to evaluate in <strong>Engine version</strong> under <strong>Validate a source</strong>. Evaluation uses this exact version, not your unsaved draft.</li><li>In <strong>Check an engine against fixtures</strong>, supply a JSON list of 1–8 test cases. The form starts with one example.</li><li>For each case, provide <code>name</code>, <code>input</code> and <code>minClaims</code>. You can add <code>requiredQuote</code> for a quotation you expect the result to include.</li><li>Select <strong>Run evaluation</strong>. Each case makes a provider call, so begin with one or two short cases.</li><li>Review each case's <code>passed</code> value in Result. A case passes when it meets the accepted claim minimum, matches the expected quotation when provided and excludes no claims.</li><li>Download the report and keep it with your engine's release evidence. If a case fails, review the source and draft, then publish and evaluate a new version.</li></ol>
+<details><summary>Show the example case</summary><pre id="guide-fixture" class="guide-code" tabindex="0"></pre></details>
+<p><code>requiredQuote</code> must equal an accepted claim's quotation after whitespace normalization. A passing suite checks these fixture expectations; it does not certify model accuracy.</p>
+<button type="button" class="secondary" data-guide-target="evaluate">Go to evaluations</button>
+</section>
+</div>
+<div id="guide-controls" class="guide-controls" hidden><button type="button" id="guide-back" class="secondary">Previous step</button><button type="button" id="guide-next">Next step</button></div>
+<details class="guide-faq"><summary>Help when something does not work</summary>
+<dl class="guide-definitions"><dt>Sign-in fails or the session expires</dt><dd>Use your existing Astra credentials and sign in again. If your account is inactive or you cannot sign in to Workflow either, contact your Astra administrator.</dd><dt>Create, Test draft or Run evaluation is disabled</dt><dd>These actions require admin access. Publishing also requires the shared registry to be available.</dd><dt>“This engine version already exists”</dt><dd>Change the version, such as 1.0.0 to 1.0.1, or use a different engine ID.</dd><dt>The quotation does not match or no claims pass checks</dt><dd>Use the exact source excerpt and ask for quotations from it. Check the identified source and section. Model output can still fail validation; review the reported error or excluded claims.</dd><dt>Output is truncated</dt><dd>Use a shorter excerpt or increase the draft's output token limit, then test again. Save a new version if you change a published engine.</dd><dt>The provider is busy or needs credits</dt><dd>Retry later for a busy provider; contact the service administrator for provider credit or configuration issues. A new run can incur another provider charge.</dd></dl>
+</details>
+<details class="guide-faq"><summary>Connect another application or use transcripts</summary><p>A developer can call <code>POST /v1/runs</code> with an engine ID, its exact version and source sections. The base URL is <code>https://colossus.astra-via.com</code>. Keep service keys on the calling backend. Lab, Workflow and Evidence need their own gateway integration; opening Colossus does not connect them automatically.</p><p>You can paste a transcript into Evidence. The API also accepts <code>timestampMs</code> on a source section. Camera capture, audio transcription, live video sessions and the Observer agent are not available in this release.</p><a class="help-link" href="https://github.com/Astra-via-Omer/astra-colossus#api" target="_blank" rel="noopener noreferrer">Read the API guide ↗</a></details>
+</div>
+</details>
 <section id="access" class="card"><div><p class="eyebrow">SHARED ASTRA ACCOUNT</p><h2>Sign in to your engine room</h2><p>Use your existing Astra Via account.</p></div><form id="login"><label>Email<input name="email" type="email" autocomplete="username" required></label><label>Password<input name="password" type="password" autocomplete="current-password" required></label><button>Sign in</button></form><details><summary>Connect with a service key</summary><form id="key-login"><label>Service key<input name="key" type="password" autocomplete="off" required></label><button>Connect</button></form><p>The key stays in this tab’s memory and clears when you reload.</p></details></section>
 <p id="status" role="status" aria-live="polite">Connect to load your configured engines and model routes.</p>
 <div id="room" hidden><div class="room-heading"><div><p class="eyebrow">ENGINE ROOM</p><h2>From evidence to a traceable result.</h2></div><button id="logout" class="secondary">Disconnect</button></div>

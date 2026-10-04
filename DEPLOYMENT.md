@@ -35,7 +35,7 @@ Shared load balancer: `astra-website-lb`, address `34.49.17.123`.
 - Path matcher: `astra-colossus`
 - Backend: `astra-colossus-backend`, preserving the load balancer's `EXTERNAL_MANAGED` scheme
 - Serverless NEG: `astra-colossus-neg`, `me-west1`, pointing at `astra-colossus`
-- Managed certificate: `astra-colossus-cert`, appended to `astra-website-lb-target-proxy` alongside existing certificates
+- Active managed certificate: `astra-colossus-cert-dns`, attached to `astra-website-lb-target-proxy` alongside existing certificates. The earlier pending `astra-colossus-cert` was detached after the replacement activated.
 - GoDaddy DNS: `A colossus → 34.49.17.123`, TTL one hour
 
 DNS, certificate activation and normal HTTPS must be verified after first provisioning. Existing website, workspace, Lab and evidence host rules remain in place. GitHub deployments update the same Cloud Run service and do not change DNS or load-balancer routing.
