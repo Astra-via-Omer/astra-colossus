@@ -35,7 +35,9 @@ function clearPrivateState() {
   $('engine').replaceChildren(); $('model').replaceChildren(); $('user-rows').replaceChildren();
   $('access-confirmation').hidden = true; $('result').textContent = 'Your result will appear here.';
   $('account-email').textContent = ''; $('account-role').textContent = ''; $('account-permissions').textContent = ''; $('account-expiry').textContent = '';
-  $('greeting').textContent = 'Welcome back.'; controls();
+  $('greeting').textContent = 'Welcome back.';
+  $('engine-count').textContent = '—'; $('route-count').textContent = '—'; $('registry-state').textContent = 'Checking…';
+  $('registry-detail').textContent = 'Checked with your account'; controls();
 }
 function endSession(reason) {
   authController.abort(); clearPrivateState(); location.replace(`/?access=${reason}`);
@@ -70,6 +72,10 @@ async function load() {
   $('engine').replaceChildren(...engines.map((e, i) => new Option(`${e.name} · ${e.version}`, String(i))));
   $('model').replaceChildren(...capabilities.routes.map(r => new Option(`${r.id} · ${r.model}`, r.id)));
   displayAccount(profile);
+  $('engine-count').textContent = String(engines.length);
+  $('route-count').textContent = String(capabilities.routes.length);
+  $('registry-state').textContent = capabilities.engineCreation ? 'Configured' : 'Not configured';
+  $('registry-detail').textContent = capabilities.engineCreation ? 'Publishing requires admin access' : 'An admin can test drafts without saving';
   guideMessage('');
   $('registry-note').textContent = !capabilities.admin ? 'Your account can run saved engines. An admin can create versions and evaluate fixtures.' : capabilities.engineCreation ? 'Saved versions are available to other callers through the engine registry.' : 'Draft testing is available. Configure a durable registry to save versions.';
   $('capabilities').textContent = capabilities.routes.map(r => `${r.id}: ${r.capabilities.join(', ')}`).join(' · ') + ' · Streaming responses: SSE.';

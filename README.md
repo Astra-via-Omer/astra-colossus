@@ -24,6 +24,12 @@ Admins can load/search existing accounts in **User access**, review a role or su
 
 The separate Personal Workspace repository includes the optional `colossus` Compose profile. For Docker development there, set `ASTRA_PROVIDER_CONFIG_JSON` and the shared account variables, then run `COLOSSUS_URL=http://colossus:8080 COLOSSUS_MODEL=astra-default docker compose -f compose.demo.yml --profile colossus up --build` from the repository root. Workflow uses the internal Colossus endpoint, the console is on port 4002, and engine versions live in a named local volume. The workspace Docker example explicitly permits local HTTP. Cloud deployments require HTTPS. The existing default Compose profile retains its direct provider connection.
 
+## Astra Via design
+
+The welcome page and protected engine room share Astra Via's official logo assets, navy/cyan palette and constellation motif. The Appearance control offers **Dark · Constellation** (default) and **Light · Clarity**. It remembers the selection on this browser for both pages and synchronizes open Colossus tabs. Storage being unavailable does not prevent changing the current page's theme. Theme changes preserve sign-in, evidence and unsaved engine drafts.
+
+The public page explains the source-to-result process, the two built-in engines and the current 20% identity / 60% support / 20% reasoning weights. The signed-in service summary reads engine-version counts, configured model-route counts and registry configuration from the existing protected API; it does not represent provider health, run history or invented activity metrics. Shared account protections and inference behavior are unchanged.
+
 ## Engines and evaluations
 
 The console includes **How to use**, a seven-step guide inside the signed-in engine room at `/app#guide`. It covers running sample evidence, interpreting and downloading results, defining and testing a draft, publishing immutable versions, and evaluating fixtures. Its shortcuts open the relevant controls. Loading the sample does not call a model and preserves non-empty evidence; you explicitly start each inference or evaluation. The guide also explains account permissions, common errors, backend integration and the current media limitations.

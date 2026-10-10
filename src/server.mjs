@@ -115,7 +115,7 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
     try {
       const url = new URL(req.url, config.origin), method = req.method;
       if (method === 'GET' && url.pathname === '/healthz') { operation = 'health'; return json(res, { service: 'colossus', status: draining ? 'draining' : 'ready' }, draining ? 503 : 200); }
-      const assets = { '/': ['welcome.html', 'text/html'], '/welcome.js': ['welcome.js', 'text/javascript'], '/console.js': ['console.js', 'text/javascript'], '/console.css': ['console.css', 'text/css'] };
+      const assets = { '/': ['welcome.html', 'text/html'], '/welcome.js': ['welcome.js', 'text/javascript'], '/console.js': ['console.js', 'text/javascript'], '/console.css': ['console.css', 'text/css'], '/theme.js': ['theme.js', 'text/javascript'], '/astra-logo.svg': ['astra-logo.svg', 'image/svg+xml'], '/astra-logo-light.svg': ['astra-logo-light.svg', 'image/svg+xml'], '/astra-icon.svg': ['astra-icon.svg', 'image/svg+xml'] };
       const asset = Object.hasOwn(assets, url.pathname) ? assets[url.pathname] : undefined;
       if (method === 'GET' && asset) { operation = 'console'; res.writeHead(200, { 'Content-Type': `${asset[1]}; charset=utf-8` }); return res.end(await readFile(new URL(asset[0], import.meta.url))); }
       if (draining) fail(503, 'draining', 'Colossus is shutting down. Retry another instance.');
