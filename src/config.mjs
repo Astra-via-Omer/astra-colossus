@@ -40,7 +40,8 @@ export function configuration(env = process.env) {
     if (!Object.hasOwn(routes, alias) || !price || typeof price !== 'object' || Array.isArray(price) ||
       !['inputPerMillion', 'outputPerMillion'].every(k => typeof price[k] === 'number' && Number.isFinite(price[k]) && price[k] >= 0 && price[k] <= 1000000) ||
       (price.cachedInputPerMillion !== undefined && (typeof price.cachedInputPerMillion !== 'number' || !Number.isFinite(price.cachedInputPerMillion) || price.cachedInputPerMillion < 0 || price.cachedInputPerMillion > 1000000))) throw Error('Invalid route pricing');
-    routes[alias].pricing = { currency: 'USD', inputPerMillion: price.inputPerMillion, outputPerMillion: price.outputPerMillion,
+    if (price.basis !== undefined && !['configured', 'peak_reference'].includes(price.basis)) throw Error('Invalid pricing basis');
+    routes[alias].pricing = { currency: 'USD', basis: price.basis || 'configured', inputPerMillion: price.inputPerMillion, outputPerMillion: price.outputPerMillion,
       ...(price.cachedInputPerMillion !== undefined ? { cachedInputPerMillion: price.cachedInputPerMillion } : {}) };
   }
   for (const field of ['COLOSSUS_ENGINE_BUCKET', 'COLOSSUS_SESSION_BUCKET', 'COLOSSUS_USAGE_BUCKET']) {

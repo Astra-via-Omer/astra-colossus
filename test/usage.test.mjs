@@ -42,6 +42,7 @@ test('normalizes subsets and prices cached input without double counting reasoni
   assert.equal(tokenCost(tokenUsage({ prompt_tokens: 1000, completion_tokens: 200 }), { ...rates, cachedInputPerMillion: 2 }).usd, 0.0028);
   assert.equal(tokenUsage({ prompt_tokens: -1, completion_tokens: 0, total_tokens: '4' }).inputTokens, null);
   assert.throws(() => configuration({ ...baseEnv, COLOSSUS_PRICING_JSON: '{"astra-default":{"inputPerMillion":-1,"outputPerMillion":4}}' }), /pricing/);
+  assert.equal(configuration({ ...baseEnv, COLOSSUS_PRICING_JSON: '{"astra-default":{"inputPerMillion":0.3,"cachedInputPerMillion":0.006,"outputPerMillion":1.2,"basis":"peak_reference"}}' }).routes['astra-default'].pricing.basis, 'peak_reference');
 });
 
 test('monitoring is browser-admin only, records verified callers and preserves Enigma account inference', async t => {
