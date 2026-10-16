@@ -9,6 +9,7 @@ import { EngineRegistry, validateEngine, engineRequest, validateResult } from '.
 import { CloudRegistry } from './cloudRegistry.mjs';
 import { Sessions } from './sessions.mjs';
 import { UsageMonitor, UsageStream, tokenUsage } from './usage.mjs';
+import { MediaObserver, mediaCostUsd } from './media.mjs';
 
 async function boundedJson(stream, limit, upstream = false) {
   const chunks = []; let size = 0;
@@ -24,6 +25,7 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
   const registry = config.engineBucket ? new CloudRegistry(config.engineBucket, fetcher) : new EngineRegistry(config, fetcher);
   const sessions = new Sessions(config, fetcher);
   const monitoring = new UsageMonitor(config, fetcher);
+  const media = new MediaObserver(config.media, fetcher);
   let inflight = 0, draining = false;
   const json = (res, body, status = 200) => {
     res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
@@ -213,7 +215,7 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
           engineCreation: hasRegistry(),
           streaming: 'sse', realtimeSession: false,
           routes: Object.entries(config.routes).map(([id, route]) => ({ id, model: route.model, capabilities: route.capabilities })),
-          observer: { status: 'future_service', input: 'timestamped source sections, transcripts, or typed multimodal chat parts on capable routes' } });
+          observer: { status: config.media ? 'ready' : 'unconfigured', engine: 'broadcast-observation@1.0.0', model: config.media?.model, input: 'PCM16 16 kHz mono WAV and timestamped JPEG frames', maxSampleMs: 4000, verification: 'Observation and claim detection only; no truth score.' } });
       }
       if (method === 'GET' && url.pathname === '/v1/models') { operation = 'models'; return json(res, { object: 'list', data: Object.entries(config.routes).flatMap(([id, route]) => [...new Set([id, route.model])].filter(name => name === id || id === 'astra-default').map(name => ({ id: name, object: 'model', owned_by: 'colossus', capabilities: route.capabilities }))) }); }
       if (method === 'GET' && url.pathname === '/v1/engines') { operation = 'engines'; return json(res, { engines: await registry.list() }); }
@@ -221,11 +223,19 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
       if (!(req.headers['content-type'] || '').startsWith('application/json')) fail(415, 'content_type', 'Use application/json.');
       const body = await boundedJson(req, config.bodyLimit);
       if (!body || typeof body !== 'object' || Array.isArray(body)) fail(400, 'invalid_request', 'Supply a JSON object.');
-      const inferenceOperations = { '/v1/chat/completions': 'chat', '/v1/runs': 'run_engine', '/v1/engines/test': 'test_engine', '/v1/evaluations': 'evaluate' };
+      const inferenceOperations = { '/v1/chat/completions': 'chat', '/v1/runs': 'run_engine', '/v1/engines/test': 'test_engine', '/v1/evaluations': 'evaluate', '/v1/media/observe':'observe_media' };
       if (Object.hasOwn(inferenceOperations, url.pathname)) {
         operation = inferenceOperations[url.pathname];
         if (['test_engine', 'evaluate'].includes(operation) && !identity.admin) fail(403, 'admin_required', 'Only admins can test or evaluate engines.');
+        if (operation==='observe_media' && identity.kind==='account' && !['admin','participant'].includes(identity.role)) fail(403,'analyst_required','Audio/video observation requires an analyst account.');
         process = await monitoring.start(identity, requestId, operation);
+      }
+      if (url.pathname === '/v1/media/observe') {
+        operation = 'observe_media';
+        let call;
+        const result=await media.observe(body,controller.signal,()=>{call=monitoring.call(process,{alias:'broadcast-media',model:config.media.model}, {id:'broadcast-observation',version:'1.0.0'});});
+        if(call){monitoring.finishCall(call,'completed',result.usage,200);call.modalities=result.usage.modalities;call.cost=mediaCostUsd(result.usage,result.model);}
+        return complete({requestId,...result},result.observation?'completed':'failed');
       }
       if (url.pathname === '/v1/chat/completions') {
         operation = 'chat'; const { response, call } = await upstream(body, controller.signal, process);

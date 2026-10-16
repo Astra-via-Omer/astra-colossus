@@ -1,4 +1,5 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
+import { mediaConfiguration } from './media.mjs';
 
 export class ApiError extends Error {
   constructor(status, code, message) { super(message); this.status = status; this.code = code; }
@@ -49,7 +50,7 @@ export function configuration(env = process.env) {
   }
   if (env.COLOSSUS_SESSION_SECRET && env.COLOSSUS_SESSION_SECRET.length < 32) throw Error('COLOSSUS_SESSION_SECRET needs at least 32 characters');
   if (env.NODE_ENV === 'production' && !origin.startsWith('https://')) throw Error('Production needs an HTTPS COLOSSUS_ORIGIN');
-  return { routes, keys, adminKey: env.COLOSSUS_ADMIN_KEY || '', origin,
+  return { routes, keys, media: mediaConfiguration(env), adminKey: env.COLOSSUS_ADMIN_KEY || '', origin,
     maxInflight: integer(env, 'COLOSSUS_MAX_INFLIGHT', 16, 1, 1000),
     timeout: integer(env, 'COLOSSUS_TIMEOUT_MS', 90000, 10, 600000),
     bodyLimit: integer(env, 'COLOSSUS_BODY_LIMIT', 2000000, 1024, 16000000),

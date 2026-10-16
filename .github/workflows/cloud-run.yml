@@ -101,9 +101,13 @@ jobs:
           env_vars: |
             COLOSSUS_ORIGIN=https://colossus.astra-via.com
             COLOSSUS_MAX_INFLIGHT=16
+            COLOSSUS_MEDIA_PROJECT=${{ vars.GCP_PROJECT_ID }}
+            COLOSSUS_MEDIA_LOCATION=global
+            COLOSSUS_MEDIA_MODEL=gemini-3.1-flash-lite
             COLOSSUS_ENGINE_BUCKET=${{ vars.COLOSSUS_ENGINE_BUCKET }}
             COLOSSUS_PRICING_JSON=${{ steps.pricing.outputs.value }}
             SUPABASE_URL=${{ vars.SUPABASE_URL }}
             SUPABASE_ANON_KEY=${{ vars.SUPABASE_ANON_KEY }}
+          env_vars_update_strategy: merge
           secrets: |
             ASTRA_PROVIDER_CONFIG_JSON=astra-provider-config:${{ vars.ASTRA_PROVIDER_SECRET_VERSION }}

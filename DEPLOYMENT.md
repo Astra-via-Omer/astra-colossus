@@ -57,3 +57,7 @@ The Personal Workspace integration uses `COLOSSUS_URL=https://colossus.astra-via
 Rollback by deploying a previously checked Colossus image. Published engine versions are immutable: select an earlier version rather than modifying it. Removing the workspace gateway URL restores its previous direct provider connection. Routing backups should be kept outside Git before modifying the shared URL map or proxy.
 
 References: [GitHub federation](https://docs.cloud.google.com/iam/docs/workload-identity-federation-with-deployment-pipelines), [Cloud Storage conditional inserts](https://docs.cloud.google.com/storage/docs/json_api/v1/objects/insert), [Cloud Run domains](https://docs.cloud.google.com/run/docs/mapping-custom-domains).
+
+### Native broadcast observer
+
+The Colossus workflow configures the Google project, `global` location and `gemini-3.1-flash-lite` model for `/v1/media/observe`. The custom project role `astraColossusMediaPredict` contains only `aiplatform.endpoints.predict` and is assigned to `astra-colossus-runtime@astra-via.iam.gserviceaccount.com`. No Google key is placed in an application or browser. Keep media capability disabled by removing `COLOSSUS_MEDIA_PROJECT` if the provider becomes unavailable. Existing text routes and usage monitoring continue independently.
