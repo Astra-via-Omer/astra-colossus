@@ -21,7 +21,7 @@ The deployment identity has Cloud Run Developer, writer on `astra-images`, and S
 
 Required repository variables: `GCP_PROJECT_ID`, `GCP_REGION`, `GCP_ARTIFACT_REPOSITORY`, `GCP_WORKLOAD_IDENTITY_PROVIDER`, `GCP_DEPLOY_SERVICE_ACCOUNT`, `GCP_RUNTIME_SERVICE_ACCOUNT`, `ASTRA_PROVIDER_SECRET_VERSION`, `COLOSSUS_ENGINE_BUCKET`, `SUPABASE_URL`, `SUPABASE_ANON_KEY`.
 
-The workflow defaults `COLOSSUS_CONTROL_DATABASE` to `astra-colossus` and `COLOSSUS_VAULT_SECRET_VERSION` to `1`. Set these optional repository variables when using a different database or vault version. `GOOGLE_CLOUD_PROJECT` supplies the project at runtime; local installations may set it explicitly.
+The workflow defaults `COLOSSUS_CONTROL_DATABASE` to `astra-colossus` and `COLOSSUS_VAULT_SECRET_VERSION` to `1`. Set these optional repository variables when using a different database or vault version. Set `GOOGLE_CLOUD_PROJECT` or `GCLOUD_PROJECT` to override the operations project; it defaults to `astra-via`.
 
 ## Operations database and vault
 
@@ -81,3 +81,7 @@ Rollback by deploying a previously checked Colossus image. Published engine vers
 Rolling back to an image before the database control plane restores environment-only routing and ignores database grants/pauses/budgets. Do not treat that as an equivalent security policy. Preserve the database and vault when rolling back; do not delete or recreate them. Newly issued scoped system keys require a control-plane-capable image.
 
 References: [GitHub federation](https://docs.cloud.google.com/iam/docs/workload-identity-federation-with-deployment-pipelines), [Cloud Storage conditional inserts](https://docs.cloud.google.com/storage/docs/json_api/v1/objects/insert), [Cloud Run domains](https://docs.cloud.google.com/run/docs/mapping-custom-domains).
+
+### Native broadcast observer
+
+The Colossus workflow configures the Google project, `global` location and `gemini-3.1-flash-lite` model for `/v1/media/observe`. The custom project role `astraColossusMediaPredict` contains only `aiplatform.endpoints.predict` and is assigned to `astra-colossus-runtime@astra-via.iam.gserviceaccount.com`. No Google key is placed in an application or browser. Keep media capability disabled by removing `COLOSSUS_MEDIA_PROJECT` if the provider becomes unavailable. Existing text routes and usage monitoring continue independently.

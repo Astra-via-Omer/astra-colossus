@@ -11,7 +11,7 @@ const now = () => new Date().toISOString();
 const digest = value => createHash('sha256').update(value).digest('hex');
 const publicRecord = value => {
   const { credential, hash, envAlias, ...visible } = value;
-  return { ...visible, ...(Object.hasOwn(value, 'credential') || envAlias ? { credentialConfigured: !!credential || !!envAlias, credentialSource: envAlias && !credential ? 'managed' : credential ? 'vault' : 'none' } : {}) };
+  return { ...visible, ...(Object.hasOwn(value, 'credential') || envAlias ? { credentialConfigured: !!credential || !!envAlias || value.native === 'vertex-media', credentialSource: value.native === 'vertex-media' ? 'runtime' : envAlias && !credential ? 'managed' : credential ? 'vault' : 'none' } : {}) };
 };
 const systemSeeds = [
   ['workflow', 'Workflow', 'https://workspace.astra-via.com', 'Evidence and document workflows'],
@@ -40,6 +40,10 @@ export class ControlPlane {
       const providerId = 'managed-' + digest(alias).slice(0, 12);
       seeds.push(['providers/' + providerId, { id: providerId, name: new URL(route.baseUrl).hostname === 'api.deepseek.com' ? 'DeepSeek' : 'Managed provider', kind: 'compatible', protocol: route.protocol || 'openai', baseUrl: route.baseUrl, enabled: true, envAlias: alias, credential: null, allowAnonymous: false, health: null, createdAt: now(), updatedAt: now() }]);
       seeds.push(['models/' + alias, { id: alias, name: alias === 'astra-default' ? 'Astra Default' : alias, providerId, model: route.model, capabilities: route.capabilities, task: 'chat', maxTokens: 4000, pricing: route.pricing || null, enabled: true, createdAt: now(), updatedAt: now() }]);
+    }
+    if (this.config.media) {
+      seeds.push(['providers/managed-vertex-media', { id: 'managed-vertex-media', name: 'Google Vertex AI', kind: 'vertex', protocol: 'vertex', native: 'vertex-media', baseUrl: 'https://aiplatform.googleapis.com', credential: null, enabled: true, createdAt: now(), updatedAt: now() }]);
+      seeds.push(['models/broadcast-media', { id: 'broadcast-media', name: 'Broadcast observation', providerId: 'managed-vertex-media', native: 'vertex-media', model: this.config.media.model, task: 'observation', maxTokens: 1400, capabilities: ['text', 'audio', 'image'], pricing: null, enabled: true, createdAt: now(), updatedAt: now() }]);
     }
     for (let attempt = 0; attempt < 5; attempt++) {
       const records = await Promise.all(seeds.map(([path]) => this.store.get(path)));
@@ -85,7 +89,10 @@ export class ControlPlane {
       createdAt: previous?.createdAt || now(), updatedAt: now() };
     if (typeof base.enabled !== 'boolean') fail(400, 'invalid_state', 'Supply a boolean enabled state.');
     let value;
-    if (collection === 'providers') {
+    if (previous?.native) {
+      if (Object.keys(body).some(key => !['id', 'name', 'enabled', 'expectedUpdatedAt'].includes(key))) fail(400, 'native_configuration', 'This native adapter is configured by deployment. Its name and enabled state can be managed here.');
+      value = { ...previous, ...base };
+    } else if (collection === 'providers') {
       const kind = body.kind ?? previous?.kind;
       if (!['openai', 'anthropic', 'deepseek', 'compatible', 'gpu'].includes(kind)) fail(400, 'invalid_provider', 'Choose a supported provider type.');
       const baseUrl = endpointUrl(body.baseUrl ?? previous?.baseUrl).href.replace(/\/$/, '');
@@ -96,7 +103,7 @@ export class ControlPlane {
         health: body.apiKey || body.baseUrl !== undefined ? null : previous?.health || null };
     } else if (collection === 'models') {
       const providerId = id(body.providerId ?? previous?.providerId), provider = (await this.store.get('providers/' + providerId)).data;
-      if (!provider) fail(400, 'provider_required', 'Choose a registered provider connection.');
+      if (!provider || provider.native) fail(400, 'provider_required', 'Choose a compatible or Anthropic connection. Native adapters use their dedicated model route.');
       const capabilities = body.capabilities ?? previous?.capabilities ?? ['text'];
       if (!Array.isArray(capabilities) || !capabilities.length || capabilities.some(item => !['text', 'image', 'audio', 'video'].includes(item)) ||
           (provider.protocol === 'anthropic' && capabilities.some(item => !['text', 'image'].includes(item)))) fail(400, 'invalid_capabilities', 'Choose capabilities supported by this provider adapter.');
@@ -155,6 +162,7 @@ export class ControlPlane {
     if (!registered) fail(400, 'unknown_model', 'Choose a configured model route.');
     const provider = (await this.store.get('providers/' + registered.providerId)).data;
     if (!registered.enabled || !provider?.enabled) fail(503, 'route_paused', 'This model or provider connection is paused.');
+    if (registered.native) fail(400, 'model_task', 'Use the native /v1/media/observe endpoint for this route.');
     const key = this.credential(provider);
     if (!key && !provider.allowAnonymous) fail(503, 'provider_key_required', 'An administrator must add this provider credential.');
     return { alias, model: registered.model, providerId: provider.id, providerName: provider.name, protocol: provider.protocol,
@@ -165,7 +173,7 @@ export class ControlPlane {
     if (!this.enabled) return Object.entries(this.config.routes).map(([id, route]) => ({ id, model: route.model, capabilities: route.capabilities, task: 'chat' }));
     await this.ensure();
     const [models, providers] = await Promise.all([this.store.list('models'), this.store.list('providers')]);
-    return models.filter(model => model.enabled && (!identity.allowedModels || identity.allowedModels.includes(model.id)) && providers.some(provider => provider.id === model.providerId && provider.enabled && (provider.credential || provider.envAlias || provider.allowAnonymous)))
+    return models.filter(model => model.enabled && (!identity.allowedModels || identity.allowedModels.includes(model.id)) && providers.some(provider => provider.id === model.providerId && provider.enabled && (provider.credential || provider.envAlias || provider.allowAnonymous || provider.native)))
       .map(model => ({ id: model.id, model: model.model, capabilities: model.capabilities, task: model.task, providerId: model.providerId }));
   }
   async authenticateKey(token) {
@@ -201,7 +209,21 @@ export class ControlPlane {
   async authorize(identity, alias) {
     if (identity.allowedModels && !identity.allowedModels.includes(alias)) fail(403, 'model_not_granted', 'This system key is not allowed to use this model route.');
   }
-  async reserve(identity, route, request, requestId, callIndex) {
+  async mediaRoute(identity) {
+    await this.authorize(identity, 'broadcast-media');
+    if (this.enabled) {
+      await this.ensure();
+      const model = (await this.store.get('models/broadcast-media')).data;
+      const provider = (await this.store.get('providers/managed-vertex-media')).data;
+      if (!model?.enabled || !provider?.enabled) fail(503, 'route_paused', 'The native media model or provider is paused.');
+      const system = (await this.store.get('systems/' + (identity.systemId || (identity.kind === 'account' ? 'shared' : 'legacy')))).data;
+      if (!system?.enabled) fail(403, 'system_paused', 'This system is paused in Colossus.');
+    }
+    // Reserve at the most expensive input modality; actual settlement uses mediaCostUsd.
+    return { alias: 'broadcast-media', model: this.config.media?.model, providerId: 'managed-vertex-media', task: 'observation', maxTokens: 1400,
+      pricing: this.config.media?.model === 'gemini-3.1-flash-lite' ? { inputPerMillion: 0.90, cachedInputPerMillion: 0.90, outputPerMillion: 2.70 } : null };
+  }
+  async reserve(identity, route, request, requestId, callIndex, inputTokens) {
     if (!this.enabled) return null;
     await this.ensure(); await this.authorize(identity, route.alias);
     const systemId = identity.systemId || (identity.kind === 'account' ? 'shared' : 'legacy');
@@ -213,7 +235,7 @@ export class ControlPlane {
       fail(409, 'budget_media_unsupported', 'Capped systems currently accept text only; media token bounds require a separate provider policy.');
     const month = now().slice(0, 7), minute = Math.floor(Date.now() / 60000);
     const walletPath = `wallets/${systemId}-${month}`, reservationPath = `reservations/${requestId}-${callIndex}`;
-    const inputBound = Buffer.byteLength(JSON.stringify(request)) + 1024, outputBound = route.task === 'embedding' ? 0 : request.max_tokens || route.maxTokens || 4000;
+    const inputBound = Number.isSafeInteger(inputTokens) && inputTokens >= 0 ? inputTokens : Buffer.byteLength(JSON.stringify(request)) + 1024, outputBound = route.task === 'embedding' ? 0 : request.max_tokens || route.maxTokens || 4000;
     const reservedUsd = route.pricing ? (inputBound * Math.max(route.pricing.inputPerMillion, route.pricing.cachedInputPerMillion || 0) + outputBound * route.pricing.outputPerMillion) / 1000000 : null;
     if (system.monthlyBudgetUsd !== null && reservedUsd === null) fail(409, 'budget_pricing_required', 'Add model prices before using a system with a spending cap.');
     const [wallet] = await this.store.mutate([walletPath, reservationPath], ([existing, previous]) => {
@@ -261,6 +283,7 @@ export class ControlPlane {
   async checkConnection(collection, recordId, actor) {
     await this.ensure(); const path = collection + '/' + id(recordId), record = (await this.store.get(path)).data;
     if (!record || !['providers', 'integrations'].includes(collection)) fail(404, 'connection_not_found', 'Choose a registered connection.');
+    if (record.native) fail(409, 'native_connection', 'Native Vertex calls use runtime identity and their own token-count preflight. No compatible model-discovery check is available.');
     if (collection === 'integrations' && !['rest', 'training'].includes(record.kind)) fail(409, 'storage_agent_required', 'Bucket connections are registered for your ingestion worker. This gateway does not ingest or copy data automatically.');
     const start = Date.now(), key = this.credential(record), headers = {};
     if (key) Object.assign(headers, record.protocol === 'anthropic' ? { 'x-api-key': key, 'anthropic-version': '2023-06-01' } : { Authorization: `Bearer ${key}` });

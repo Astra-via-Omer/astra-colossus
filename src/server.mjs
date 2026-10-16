@@ -12,6 +12,7 @@ import { UsageMonitor, UsageStream, tokenUsage } from './usage.mjs';
 import { ControlPlane } from './controlPlane.mjs';
 import { endpointFetch } from './endpoints.mjs';
 import { providerRequest, providerResult, AnthropicStream } from './providerAdapters.mjs';
+import { MediaObserver, mediaCostUsd } from './media.mjs';
 
 async function boundedJson(stream, limit, upstream = false) {
   const chunks = []; let size = 0;
@@ -27,6 +28,7 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
   const registry = config.engineBucket ? new CloudRegistry(config.engineBucket, fetcher) : new EngineRegistry(config, fetcher);
   const sessions = new Sessions(config, fetcher);
   const monitoring = new UsageMonitor(config, fetcher);
+  const media = new MediaObserver(config.media, fetcher);
   const control = new ControlPlane(config, fetcher, endpointFetcher, controlStore), activeControllers = new Map();
   let inflight = 0, controlInflight = 0, draining = false;
   const json = (res, body, status = 200) => {
@@ -265,7 +267,7 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
           engineCreation: hasRegistry(),
           streaming: 'sse', realtimeSession: false,
           routes: await control.routes(identity),
-          observer: { status: 'future_service', input: 'timestamped source sections, transcripts, or typed multimodal chat parts on capable routes' } });
+          observer: { status: config.media ? 'ready' : 'unconfigured', engine: 'broadcast-observation@1.0.0', model: config.media?.model, input: 'PCM16 16 kHz mono WAV and timestamped JPEG frames', maxSampleMs: 4000, verification: 'Observation and claim detection only; no truth score.' } });
       }
       if (method === 'GET' && url.pathname === '/v1/models') { operation = 'models'; return json(res, { object: 'list', data: (await control.routes(identity)).flatMap(route => [...new Set([route.id, route.model])].filter(name => name === route.id || route.id === 'astra-default').map(name => ({ id: name, object: 'model', owned_by: 'colossus', capabilities: route.capabilities, task: route.task }))) }); }
       if (method === 'GET' && url.pathname === '/v1/engines') { operation = 'engines'; return json(res, { engines: await registry.list() }); }
@@ -273,10 +275,14 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
       if (!(req.headers['content-type'] || '').startsWith('application/json')) fail(415, 'content_type', 'Use application/json.');
       const body = await boundedJson(req, config.bodyLimit);
       if (!body || typeof body !== 'object' || Array.isArray(body)) fail(400, 'invalid_request', 'Supply a JSON object.');
-      const inferenceOperations = { '/v1/chat/completions': 'chat', '/v1/embeddings': 'embedding', '/v1/runs': 'run_engine', '/v1/engines/test': 'test_engine', '/v1/evaluations': 'evaluate' };
+      const inferenceOperations = { '/v1/chat/completions': 'chat', '/v1/embeddings': 'embedding', '/v1/runs': 'run_engine', '/v1/engines/test': 'test_engine', '/v1/evaluations': 'evaluate', '/v1/media/observe': 'observe_media' };
       if (Object.hasOwn(inferenceOperations, url.pathname)) {
         operation = inferenceOperations[url.pathname];
         if (['test_engine', 'evaluate'].includes(operation) && !identity.admin) fail(403, 'admin_required', 'Only admins can test or evaluate engines.');
+        if (operation==='observe_media' && identity.kind==='account') {
+          if(!['admin','participant'].includes(identity.role)) fail(403,'analyst_required','Audio/video observation requires an analyst account.');
+          if(!equalSecret(req.headers['x-enigma-media-key'],config.mediaIngestKey)) fail(403,'media_gateway_required','Account media analysis must come through the authorized Enigma gateway.');
+        }
         process = await monitoring.start(identity, requestId, operation);
         await control.startProcess(process); activeControllers.set(requestId, controller);
         if (control.enabled) {
@@ -292,6 +298,18 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
         const data = await boundedJson(Readable.fromWeb(response.body), 8000000, true);
         monitoring.finishCall(call, 'completed', data.usage ? { ...data.usage, completion_tokens: 0, prompt_cache_hit_tokens: 0 } : undefined, response.status);
         return await complete(data);
+      }
+      if (url.pathname === '/v1/media/observe') {
+        operation = 'observe_media';
+        let call;
+        const route = config.media ? await control.mediaRoute(identity) : null;
+        const result=await media.observe(body,controller.signal,async bounds=>{
+          const reservation = await control.reserve(identity, route, { max_tokens: bounds.maxOutputTokens }, process.requestId, process.calls.length + 1, bounds.inputTokens);
+          call=monitoring.call(process,{alias:'broadcast-media',model:config.media.model}, {id:'broadcast-observation',version:'1.0.0'});
+          call.reservation = reservation; call.providerId = route.providerId;
+        });
+        if(call){monitoring.finishCall(call,'completed',result.usage,200);call.modalities=result.usage.modalities;call.cost=mediaCostUsd(result.usage,result.model);}
+        return complete({requestId,...result},result.observation?'completed':'failed');
       }
       if (url.pathname === '/v1/chat/completions') {
         operation = 'chat'; const { response, route, call } = await upstream(body, controller.signal, process, null, identity);

@@ -4,7 +4,7 @@
   const discovered = new Map();
   const titles = { overview: 'Overview', models: 'Models', providers: 'Providers', systems: 'Astra systems', keys: 'API access', processes: 'Processes', analytics: 'Costs & usage', integrations: 'Integrations', engines: 'Engine studio', access: 'Users & access', guide: 'Documentation' };
   const aliases = { monitoring: 'analytics', 'user-access': 'access', guide: 'guide', room: 'engines' };
-  const names = { chat: 'Chat inference', embedding: 'Embedding', run_engine: 'Engine run', test_engine: 'Draft test', evaluate: 'Evaluation' };
+  const names = { chat: 'Chat inference', embedding: 'Embedding', run_engine: 'Engine run', test_engine: 'Draft test', evaluate: 'Evaluation', observe_media: 'Broadcast observation' };
   const count = value => value === null || value === undefined ? 'Unavailable' : new Intl.NumberFormat().format(value);
   const usd = value => value === null || value === undefined ? 'Unavailable' : new Intl.NumberFormat(undefined, { style: 'currency', currency: 'USD', maximumFractionDigits: 5 }).format(value);
   const time = value => value === null || value === undefined ? 'Unavailable' : value < 1000 ? Math.round(value) + ' ms' : value < 60000 ? (value / 1000).toFixed(1) + ' s' : (value / 60000).toFixed(1) + ' min';
@@ -66,7 +66,7 @@
       element.append(node('span', 'node-symbol', { workflow: '◈', enigma: '⌁', lab: '⌘', evidence: '◇', observer: '◎' }[system.id]), label, node('span', 'node-indicator' + (enrolled ? ' enrolled' : ''))); return element;
     }));
     const providers = catalog.providers.slice(0, 3).map(provider => {
-      const element = node('div', 'provider-summary'), label = node('div'); label.append(node('strong', '', provider.name), node('small', '', `${catalog.models.filter(model => model.providerId === provider.id).length} model routes · ${provider.credentialSource === 'managed' ? 'Managed credential' : provider.credentialConfigured ? 'Vault credential' : provider.allowAnonymous ? 'Anonymous endpoint' : 'Needs credential'}`));
+      const element = node('div', 'provider-summary'), label = node('div'); label.append(node('strong', '', provider.name), node('small', '', `${catalog.models.filter(model => model.providerId === provider.id).length} model routes · ${provider.credentialSource === 'runtime' ? 'Runtime identity' : provider.credentialSource === 'managed' ? 'Managed credential' : provider.credentialConfigured ? 'Vault credential' : provider.allowAnonymous ? 'Anonymous endpoint' : 'Needs credential'}`));
       element.append(providerMark(provider), label, statusBadge(!provider.enabled ? 'paused' : provider.health?.status || (provider.credentialConfigured || provider.allowAnonymous ? 'configured' : 'needs key'))); return element;
     });
     for (const [name, kind] of [['OpenAI', 'openai'], ['Anthropic', 'anthropic']]) if (providers.length < 3 && !catalog.providers.some(provider => provider.kind === kind)) {
@@ -93,13 +93,13 @@
   }
   function connectionCard(record, collection) {
     const element = node('article', 'connection-card'), top = node('div', 'connection-card-top'), title = node('div');
-    title.append(node('h2', '', record.name), node('small', '', collection === 'providers' ? record.protocol === 'anthropic' ? 'Anthropic Messages' : record.kind === 'gpu' ? 'GPU · compatible serving' : 'OpenAI compatible' : { rest: 'HTTP data API', gcs: 'Google Cloud Storage', s3: 'S3 storage', training: 'External training controller' }[record.kind]));
+    title.append(node('h2', '', record.name), node('small', '', collection === 'providers' ? record.native ? 'Native Vertex broadcast adapter' : record.protocol === 'anthropic' ? 'Anthropic Messages' : record.kind === 'gpu' ? 'GPU · compatible serving' : 'OpenAI compatible' : { rest: 'HTTP data API', gcs: 'Google Cloud Storage', s3: 'S3 storage', training: 'External training controller' }[record.kind]));
     top.append(collection === 'providers' ? providerMark(record) : node('span', 'provider-mark gpu-mark', record.kind === 'training' ? '⌘' : '◇'), title, statusBadge(!record.enabled ? 'paused' : record.health?.status || 'registered')); element.append(top);
     element.append(node('p', 'connection-endpoint', record.baseUrl || record.endpoint));
-    element.append(node('p', record.credentialConfigured ? 'connection-key-status' : '', record.credentialSource === 'managed' ? '◇ Credential supplied by managed configuration' : record.credentialConfigured ? '◇ Credential encrypted in the vault' : record.allowAnonymous ? 'Public endpoint · no credential' : 'No credential stored'));
+    element.append(node('p', record.credentialConfigured ? 'connection-key-status' : '', record.credentialSource === 'runtime' ? '◇ Google runtime identity · no API key' : record.credentialSource === 'managed' ? '◇ Credential supplied by managed configuration' : record.credentialConfigured ? '◇ Credential encrypted in the vault' : record.allowAnonymous ? 'Public endpoint · no credential' : 'No credential stored'));
     element.append(node('p', '', record.health ? `${stamp(record.health.checkedAt)} · ${record.health.latencyMs} ms${record.health.httpStatus ? ' · HTTP ' + record.health.httpStatus : ''}` : collection === 'providers' ? 'No connection check has been recorded.' : record.description || 'Registered connection metadata.'));
     const actions = node('div', 'actions'); actions.append(button('Configure', () => openEditor(collection, record), 'secondary'));
-    if (collection === 'providers' || ['rest', 'training'].includes(record.kind)) actions.append(button(collection === 'providers' ? 'Check & discover' : 'Check endpoint', () => checkConnection(collection, record), 'secondary'));
+    if (!record.native && (collection === 'providers' || ['rest', 'training'].includes(record.kind))) actions.append(button(collection === 'providers' ? 'Check & discover' : 'Check endpoint', () => checkConnection(collection, record), 'secondary'));
     actions.append(button(record.enabled ? 'Pause' : 'Enable', () => toggle(collection, record), 'secondary')); element.append(actions);
     if (collection === 'providers' && discovered.has(record.id)) {
       const list = node('div', 'discovered-models'), models = discovered.get(record.id); list.append(node('strong', '', models.length ? 'Discovered models · select to register' : 'No model IDs were returned by this endpoint.'));
@@ -183,7 +183,10 @@
     const providerKind = typeof preset === 'string' ? preset : record?.kind || 'openai';
     field('name', 'Name', record?.name || (collection === 'providers' ? presets[providerKind][0] : ''), { required: true });
     if (collection !== 'keys') field('id', collection === 'models' ? 'Model alias' : 'Registry ID', record?.id || '', { required: true, disabled: !!record, placeholder: collection === 'models' ? 'astra-reasoning' : 'readable-unique-id' });
-    if (collection === 'providers') {
+    if (record?.native) {
+      byId('ops-editor-fields').append(node('p', 'editor-note', `Native broadcast observation · ${record.model || record.baseUrl}. Provider, model and modality pricing are configured by deployment. Use Pause / Enable to control new admissions.`));
+      byId('ops-editor-note').textContent = 'You can change the display name here. This native route uses /v1/media/observe and retains the Enigma gateway requirement for account calls.';
+    } else if (collection === 'providers') {
       const kind = field('kind', 'Provider type', providerKind, { required: true, choices: Object.entries(presets).map(([key, value]) => [key, value[0]]) });
       const url = field('baseUrl', 'API base URL', record?.baseUrl || presets[providerKind][1], { required: true, wide: true, note: 'HTTPS only. Include /v1 if required by the provider. Private and metadata addresses are blocked.' });
       kind.addEventListener('change', () => { if (!record) { url.value = presets[kind.value][1]; byId('editor-name').value = presets[kind.value][0]; } });
@@ -192,7 +195,8 @@
       byId('ops-editor-note').textContent = 'Saving does not make a paid model call.';
     } else if (collection === 'models') {
       if (!catalog.providers.length) { notice('Connect a provider before registering its model.', true); return; }
-      const provider = field('providerId', 'Provider connection', record?.providerId || preset?.providerId || catalog.providers[0].id, { required: true, choices: catalog.providers.map(value => [value.id, value.name]) });
+      const choices = catalog.providers.filter(value => !value.native);
+      const provider = field('providerId', 'Provider connection', record?.providerId || preset?.providerId || choices[0]?.id || '', { required: true, choices: choices.map(value => [value.id, value.name]) });
       const native = field('model', 'Native provider model name', record?.model || preset?.nativeModel || '', { required: true, placeholder: 'Exact model ID from your provider' });
       const dataList = node('datalist'); dataList.id = 'native-model-options'; byId('ops-editor-fields').append(dataList); native.setAttribute('list', dataList.id);
       const updateList = () => dataList.replaceChildren(...(discovered.get(provider.value) || []).map(model => new Option(model.id, model.id))); provider.addEventListener('change', updateList); updateList();
@@ -207,7 +211,7 @@
       field('url', 'System URL (optional)', record?.url || '', { wide: true, placeholder: 'https://your-system.astra-via.com' });
       field('monthlyBudgetUsd', 'Monthly spending cap · USD', record?.monthlyBudgetUsd, { type: 'number', min: 0, max: 10000000, placeholder: 'Unlimited' });
       field('requestsPerMinute', 'Model calls per minute', record?.requestsPerMinute || 120, { type: 'number', min: 1, max: 100000, step: '1', required: true });
-      field('description', 'Purpose', record?.description || '', { wide: true, textarea: true }); byId('ops-editor-note').textContent = 'A capped system requires configured model prices and currently accepts text only. Incomplete provider usage retains its reserved spending.';
+      field('description', 'Purpose', record?.description || '', { wide: true, textarea: true }); byId('ops-editor-note').textContent = 'A capped system requires configured model prices. Chat accepts text only under a cap; native broadcast media uses its token-count preflight. Incomplete usage retains reserved spending.';
     } else if (collection === 'keys') {
       field('systemId', 'Calling system', preset?.systemId || '', { required: true, choices: [['', 'Select a system'], ...catalog.systems.filter(value => value.enabled).map(value => [value.id, value.name])] });
       field('expiresInDays', 'Key lifetime', '90', { choices: [['30', '30 days'], ['90', '90 days'], ['365', '365 days']] });
@@ -243,8 +247,8 @@
     const body = { ...values, ...(editor.record ? { id: editor.record.id, expectedUpdatedAt: editor.record.updatedAt } : {}) };
     byId('ops-editor-save').disabled = true; byId('ops-editor-error').textContent = '';
     try {
-      if (collection === 'providers') { body.allowAnonymous = data.getAll('anonymous').includes('allow'); delete body.anonymous; if (!body.apiKey) delete body.apiKey; }
-      if (collection === 'models') {
+      if (collection === 'providers' && !editor.record?.native) { body.allowAnonymous = data.getAll('anonymous').includes('allow'); delete body.anonymous; if (!body.apiKey) delete body.apiKey; }
+      if (collection === 'models' && !editor.record?.native) {
         body.capabilities = data.getAll('capabilities'); body.maxTokens = Number(body.maxTokens);
         if ([body.inputRate, body.outputRate, body.cachedRate].every(value => value === '')) body.pricing = null;
         else { if (body.inputRate === '' || body.outputRate === '') throw Error('Set both input and output rates, or leave all prices blank.'); body.pricing = { inputPerMillion: Number(body.inputRate), outputPerMillion: Number(body.outputRate), ...(body.cachedRate !== '' ? { cachedInputPerMillion: Number(body.cachedRate) } : {}) };
@@ -275,7 +279,7 @@
     for (const call of process.calls) {
       const article = node('article', 'process-call'); article.append(node('h3', '', `${call.index}. ${call.route} · ${call.providerModel}`), statusBadge(call.status));
       const details = node('dl'); for (const [label, value] of [['Input tokens', count(call.usage.inputTokens)], ['Output tokens', count(call.usage.outputTokens)], ['Cached input', count(call.usage.cachedInputTokens)], ['Reasoning subset', count(call.usage.reasoningTokens)], ['Estimated USD', usd(call.cost.usd)], ['Provider duration', time(call.durationMs)]]) details.append(node('dt', '', label), node('dd', '', value)); article.append(details);
-      article.append(node('p', '', call.rates ? `USD / million tokens: input ${call.rates.inputPerMillion}, cached ${call.rates.cachedInputPerMillion ?? 'unavailable'}, output ${call.rates.outputPerMillion}.${call.rates.basis === 'peak_reference' ? ' Peak reference rates; discounts not applied.' : ''}` : 'No rate snapshot. Cost is unavailable.'));
+      article.append(node('p', '', call.rates ? `USD / million tokens: input ${call.rates.inputPerMillion}, cached ${call.rates.cachedInputPerMillion ?? 'unavailable'}, output ${call.rates.outputPerMillion}.${call.rates.basis === 'peak_reference' ? ' Peak reference rates; discounts not applied.' : ''}` : call.cost.basis || 'No rate snapshot. Cost is unavailable.'));
       if (call.usage.cacheWriteTokens > 0) article.append(node('p', '', 'Provider cache-write tokens require separate pricing. This call’s cost remains unavailable.'));
       container.append(article);
     }
