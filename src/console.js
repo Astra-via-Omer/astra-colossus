@@ -2,9 +2,10 @@ const $ = id => document.getElementById(id);
 let engines = [], lastResult, busy = false, permissions, account, accountVerified = false, signingOut = false;
 let authController = new AbortController(), userOffset = 0, userCount = 0, pendingChange, checkingAccount = false;
 function controls() {
-  const connected = !!account && accountVerified, admin = connected && account.role === 'admin' && !!permissions?.admin;
+  const connected = !!account && accountVerified && account.role === 'admin', admin = connected && !!permissions?.admin;
   $('account').hidden = !account; $('room').hidden = !connected;
   $('access-link').hidden = !admin; $('user-access').hidden = !admin;
+  $('monitor-link').hidden = !admin; $('monitoring').hidden = !admin;
   $('create').closest('section').hidden = !admin; $('evaluate').closest('section').hidden = !admin;
   $('run').querySelector('button').disabled = busy || !connected;
   $('save-engine').disabled = busy || !admin || !permissions?.engineCreation;
@@ -36,6 +37,7 @@ function clearPrivateState() {
   $('access-confirmation').hidden = true; $('result').textContent = 'Your result will appear here.';
   $('account-email').textContent = ''; $('account-role').textContent = ''; $('account-permissions').textContent = ''; $('account-expiry').textContent = '';
   $('greeting').textContent = 'Welcome back.';
+  clearMonitoring();
   $('engine-count').textContent = '—'; $('route-count').textContent = '—'; $('registry-state').textContent = 'Checking…';
   $('registry-detail').textContent = 'Checked with your account'; controls();
 }
@@ -49,7 +51,7 @@ function displayAccount(profile) {
   $('account-email').textContent = account.email;
   $('account-role').textContent = `Astra ${account.role}`;
   $('account-permissions').textContent = account.role === 'admin'
-    ? 'You can run saved engines, create and test versions, evaluate fixtures and manage shared user access.'
+    ? 'You can monitor usage and costs across all accounts, run engines, create and test versions, evaluate fixtures and manage shared user access.'
     : 'You can run saved engine versions and download your results. An Astra admin can create, test and evaluate engines.';
   $('account-expiry').textContent = `This Colossus session ends at ${new Date(profile.expiresAt).toLocaleTimeString()}. Sign in again to continue after it expires.`;
 }
@@ -62,7 +64,7 @@ async function task(action) {
   if (busy) return;
   busy = true; controls(); $('status').textContent = 'Working…';
   try { await action(); if (account) $('status').textContent = 'Complete.'; } catch (error) { if (account && !authController.signal.aborted) $('status').textContent = error.message; }
-  finally { busy = false; controls(); }
+  finally { busy = false; controls(); void loadMonitoring(); }
 }
 async function load() {
   const [profile, capabilities] = await Promise.all([api('/session'), api('/v1/capabilities')]);
@@ -80,6 +82,7 @@ async function load() {
   $('registry-note').textContent = !capabilities.admin ? 'Your account can run saved engines. An admin can create versions and evaluate fixtures.' : capabilities.engineCreation ? 'Saved versions are available to other callers through the engine registry.' : 'Draft testing is available. Configure a durable registry to save versions.';
   $('capabilities').textContent = capabilities.routes.map(r => `${r.id}: ${r.capabilities.join(', ')}`).join(' · ') + ' · Streaming responses: SSE.';
   controls();
+  void loadMonitoring();
 }
 async function checkAccount() {
   if (checkingAccount || authController.signal.aborted) return; checkingAccount = true;
@@ -92,6 +95,7 @@ async function checkAccount() {
   } catch (error) {
     if (!authController.signal.aborted) {
       accountVerified = false; $('user-rows').replaceChildren(); pendingChange = undefined; $('access-confirmation').hidden = true; controls();
+      clearMonitoring();
       $('status').textContent = 'Account access could not be verified. Actions are paused until the shared account service responds.';
     }
   } finally { checkingAccount = false; }
@@ -226,7 +230,75 @@ controls();
 load().then(() => { $('status').textContent = 'Your Astra account is connected.'; }).catch(error => {
   if (!authController.signal.aborted) { accountVerified = false; controls(); $('status').textContent = error.message + ' Return to the welcome page to retry sign-in.'; }
 });
-const accountTimer = setInterval(() => { if (document.visibilityState === 'visible') void checkAccount(); }, 15000);
-window.addEventListener('focus', () => { void checkAccount(); });
+let monitoringLoading = false, monitoringQueued = false, monitoringVersion = 0;
+const number = value => value === null ? 'Unavailable' : new Intl.NumberFormat().format(value);
+const money = value => value === null ? 'Unavailable' : new Intl.NumberFormat(undefined, { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 6 }).format(value);
+const unitCost = value => value === null ? 'Unavailable' : '$' + value.toFixed(10);
+const duration = value => value === null ? 'Unavailable' : value < 1000 ? `${Math.round(value)} ms` : value < 60000 ? `${(value / 1000).toFixed(1)} s` : `${(value / 60000).toFixed(1)} min`;
+function clearMonitoring() {
+  monitoringVersion++;
+  for (const id of ['monitor-models', 'monitor-users', 'monitor-processes', 'monitor-rates']) $(id).replaceChildren();
+  $('monitor-user').replaceChildren(new Option('All accounts & services', ''));
+  for (const id of ['metric-tokens', 'metric-cost', 'metric-unit-cost', 'metric-time', 'metric-active', 'metric-average']) $(id).textContent = '—';
+  $('monitor-status').textContent = 'Usage is unavailable until admin access is verified.'; $('monitor-coverage').textContent = '';
+}
+function textRow(values) {
+  const row = document.createElement('tr');
+  for (const value of values) { const cell = document.createElement('td'); cell.textContent = value; row.append(cell); }
+  return row;
+}
+const operationNames = { run_engine: 'Engine run', test_engine: 'Draft test', evaluate: 'Evaluation', chat: 'Chat inference' };
+function renderMonitoring(data) {
+  const total = data.totals, selectedUser = $('monitor-user').value;
+  $('monitor-user').replaceChildren(new Option('All accounts & services', ''), ...data.users.map(user => new Option(user.email || user.id, user.id)));
+  $('monitor-user').value = selectedUser;
+  $('metric-tokens').textContent = total.calls && !total.reportedCalls ? 'Unavailable' : number(total.totalTokens);
+  $('metric-token-detail').textContent = `${number(total.inputTokens)} input · ${number(total.outputTokens)} output`;
+  $('metric-cost').textContent = money(total.estimatedCostUsd);
+  $('metric-cost-detail').textContent = `${total.pricedCalls} / ${total.calls} calls fully priced${total.costComplete ? '' : ' · incomplete'}`;
+  $('metric-unit-cost').textContent = unitCost(total.costPerTokenUsd);
+  $('metric-time').textContent = duration(total.providerDurationMs);
+  $('metric-time-detail').textContent = `${total.calls} model calls · ${duration(total.durationMs)} finished process time`;
+  $('metric-active').textContent = number(total.running);
+  $('metric-process-detail').textContent = `${total.processes} processes · ${total.failed} failed / cancelled · ${total.stale} stale`;
+  $('metric-average').textContent = duration(total.averageDurationMs);
+  $('metric-rate-detail').textContent = `${money(total.costPerProviderMinuteUsd)} / provider processing minute`;
+  $('monitor-coverage').textContent = `${total.reportedCalls} / ${total.calls} calls have complete token usage. ${total.usageComplete && total.costComplete ? 'Usage and cost coverage is complete for this selection.' : 'Totals include only reported usage and known cost; missing values are not zero.'} ${data.limited ? 'History reached the 1,000-process query limit. All totals cover this bounded sample; choose a shorter time range.' : ''} ${data.storage === 'process_memory' ? 'Local preview: history is held in this process and resets on restart.' : 'History is shared across service instances.'}`;
+  $('monitor-models').replaceChildren(...data.models.map(model => textRow([model.route, number(model.calls), `${number(model.totalTokens)}${model.usageComplete ? '' : ' · partial'}`, `${money(model.estimatedCostUsd)}${model.costComplete ? '' : ' · partial'}`, duration(model.providerDurationMs)])));
+  $('monitor-users').replaceChildren(...data.byUser.map(user => textRow([user.actor.email || user.actor.id, number(user.processes), `${number(user.totalTokens)}${user.usageComplete ? '' : ' · partial'}`, `${money(user.estimatedCostUsd)}${user.costComplete ? '' : ' · partial'}`, duration(user.durationMs)])));
+  const open = new Set([...$('monitor-processes').querySelectorAll('details[open]')].map(node => node.dataset.requestId));
+  $('monitor-processes').replaceChildren(...data.processes.map(process => {
+    const details = document.createElement('details'), summary = document.createElement('summary'); details.dataset.requestId = process.requestId; details.open = open.has(process.requestId);
+    for (const value of [operationNames[process.operation] || process.operation, process.actor.email || process.actor.id, process.status, duration(process.durationMs), new Date(process.startedAt).toLocaleString()]) { const span = document.createElement('span'); span.textContent = value; summary.append(span); }
+    const meta = document.createElement('p'); meta.className = 'guide-hint'; meta.textContent = `Request ${process.requestId}${process.errorCode ? ' · ' + process.errorCode : ''}`;
+    details.append(summary, meta);
+    for (const call of process.calls) {
+      const line = document.createElement('p');
+      line.textContent = `Call ${call.index} · ${call.route} / ${call.providerModel}${call.engine ? ' · ' + call.engine.id + '@' + call.engine.version : ''} · ${call.status} · ${duration(call.durationMs)} · ${number(call.usage.inputTokens)} input / ${number(call.usage.outputTokens)} output / ${number(call.usage.totalTokens)} total · ${number(call.usage.cachedInputTokens)} cached input · ${number(call.usage.reasoningTokens)} reasoning · ${money(call.cost.usd)} estimated${call.cost.complete ? '' : ' (incomplete)'}`;
+      details.append(line);
+      const rates = document.createElement('p'); rates.className = 'guide-hint'; rates.textContent = call.rates ? `Rate snapshot, USD / 1M: input ${call.rates.inputPerMillion}, cached input ${call.rates.cachedInputPerMillion ?? 'unavailable'}, output ${call.rates.outputPerMillion}.` : 'No provider rate was configured for this call.'; details.append(rates);
+    }
+    if (!process.calls.length) { const note = document.createElement('p'); note.textContent = process.status === 'running' ? 'The process is preparing its model call.' : process.status === 'stale' ? 'No completion record is available; model usage may be missing.' : 'No provider call was started.'; details.append(note); }
+    return details;
+  }));
+  if (!data.processes.length) { const empty = document.createElement('p'); empty.textContent = 'No processes recorded in this selection. New activity will appear here.'; $('monitor-processes').append(empty); }
+  $('monitor-recent-note').textContent = `Showing ${data.processes.length} of ${total.processes} processes, newest first. Expand a process for model calls, rate snapshots and token details.`;
+  $('monitor-rates').replaceChildren(...data.rates.map(item => textRow([`${item.route} / ${item.providerModel}`, item.rates ? money(item.rates.inputPerMillion) : 'Not configured', item.rates?.cachedInputPerMillion !== undefined ? money(item.rates.cachedInputPerMillion) : 'Not configured', item.rates ? money(item.rates.outputPerMillion) : 'Not configured'])));
+  $('monitor-status').textContent = `Updated ${new Date(data.generatedAt).toLocaleTimeString()} · refreshes every 15 seconds while this page is visible.`;
+}
+async function loadMonitoring() {
+  if (!accountVerified || account?.role !== 'admin' || authController.signal.aborted) return;
+  if (monitoringLoading) { monitoringQueued = true; return; }
+  monitoringQueued = false;
+  monitoringLoading = true; $('monitor-refresh').disabled = true;
+  const version = monitoringVersion, query = new URLSearchParams({ days: $('monitor-days').value, userId: $('monitor-user').value });
+  try { const data = await api('/v1/monitoring?' + query); if (version === monitoringVersion && accountVerified && !authController.signal.aborted) renderMonitoring(data); }
+  catch (error) { if (version === monitoringVersion && !authController.signal.aborted) { clearMonitoring(); $('monitor-status').textContent = error.message + ' Usage could not be refreshed.'; } }
+  finally { monitoringLoading = false; $('monitor-refresh').disabled = false; if (monitoringQueued) void loadMonitoring(); }
+}
+$('monitor-filters').addEventListener('submit', event => { event.preventDefault(); void loadMonitoring(); });
+for (const id of ['monitor-days', 'monitor-user']) $(id).addEventListener('change', () => { monitoringVersion++; $('monitor-status').textContent = 'Loading the selected usage…'; void loadMonitoring(); });
+const accountTimer = setInterval(() => { if (document.visibilityState === 'visible') void checkAccount().then(loadMonitoring); }, 15000);
+window.addEventListener('focus', () => { void checkAccount().then(loadMonitoring); });
 window.addEventListener('pagehide', () => { clearInterval(accountTimer); authController.abort(); clearPrivateState(); });
 window.addEventListener('pageshow', event => { if (event.persisted) location.reload(); });

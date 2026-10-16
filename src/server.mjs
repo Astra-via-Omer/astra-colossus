@@ -1,6 +1,6 @@
 import http from 'node:http';
 import { readFile } from 'node:fs/promises';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { pathToFileURL } from 'node:url';
@@ -8,6 +8,7 @@ import { configuration, ApiError, fail, equalSecret, resolveRoute, validateChat 
 import { EngineRegistry, validateEngine, engineRequest, validateResult } from './engines.mjs';
 import { CloudRegistry } from './cloudRegistry.mjs';
 import { Sessions } from './sessions.mjs';
+import { UsageMonitor, UsageStream, tokenUsage } from './usage.mjs';
 
 async function boundedJson(stream, limit, upstream = false) {
   const chunks = []; let size = 0;
@@ -22,6 +23,7 @@ async function boundedJson(stream, limit, upstream = false) {
 export function createService(config, { fetcher = fetch, logger = entry => console.log(JSON.stringify(entry)) } = {}) {
   const registry = config.engineBucket ? new CloudRegistry(config.engineBucket, fetcher) : new EngineRegistry(config, fetcher);
   const sessions = new Sessions(config, fetcher);
+  const monitoring = new UsageMonitor(config, fetcher);
   let inflight = 0, draining = false;
   const json = (res, body, status = 200) => {
     res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
@@ -45,28 +47,34 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
     // A Colossus assignment can revoke access independently of Workflow.
     const assignment = user.app_metadata?.colossus;
     if (!user.id || user.app_metadata?.disabled || user.deleted_at || (user.banned_until && Date.parse(user.banned_until) > Date.now()) ||
-        assignment?.enabled === false || !['admin', 'participant', 'reader', 'viewer'].includes(role)) fail(403, 'access_denied', 'This account cannot access Colossus.');
+        assignment?.enabled === false || (user.app_metadata?.system_access && user.app_metadata.system_access.colossus !== true) ||
+        !['admin', 'participant', 'reader', 'viewer'].includes(role)) fail(403, 'access_denied', 'This account cannot access Colossus.');
     const name = user.user_metadata?.full_name || user.user_metadata?.name;
     return { kind: 'account', admin: role === 'admin', role, id: user.id,
       email: typeof user.email === 'string' ? user.email.slice(0, 254) : '',
       name: typeof name === 'string' ? name.slice(0, 80) : '', token };
   }
   const sessionId = req => /(?:^|;\s*)colossus_session=([^;]+)/.exec(req.headers.cookie || '')?.[1];
+  function requireConsoleAdmin(identity) {
+    if (!identity.admin) fail(403, 'access_denied', 'Colossus console access is currently limited to active Astra administrators.');
+    return identity;
+  }
   async function browserIdentity(req) {
     if (!['GET', 'HEAD'].includes(req.method)) checkOrigin(req);
     const id = sessionId(req);
     if (!id) fail(401, 'unauthorized', 'Sign in with your Astra account.');
     const session = await sessions.get(id);
-    return { ...await userFor(session.token), expiresAt: session.expiresAt };
+    return { ...requireConsoleAdmin(await userFor(session.token)), expiresAt: session.expiresAt };
   }
   const hasRegistry = () => !!(config.engineBucket || (config.serviceKey && config.supabaseUrl) || (config.engineFile && !config.production));
   const profile = identity => ({ user: { id: identity.id, email: identity.email, name: identity.name, role: identity.role },
     expiresAt: identity.expiresAt, permissions: { run: true, create: identity.admin && hasRegistry(), test: identity.admin,
-      evaluate: identity.admin, manageUsers: identity.admin } });
+      evaluate: identity.admin, manageUsers: identity.admin, monitoring: identity.admin } });
   async function authenticate(req) {
     const bearer = /^Bearer (\S+)$/.exec(req.headers.authorization || '')?.[1];
-    if (config.adminKey && equalSecret(bearer, config.adminKey)) return { kind: 'service', admin: true };
-    if (config.keys.some(key => equalSecret(bearer, key))) return { kind: 'service', admin: !config.adminKey };
+    const serviceId = () => 'service-' + createHash('sha256').update('colossus-usage\0').update(bearer).digest('hex').slice(0, 12);
+    if (config.adminKey && equalSecret(bearer, config.adminKey)) return { kind: 'service', id: serviceId(), admin: true };
+    if (config.keys.some(key => equalSecret(bearer, key))) return { kind: 'service', id: serviceId(), admin: !config.adminKey };
     if (bearer) return userFor(bearer);
     return browserIdentity(req);
   }
@@ -83,29 +91,40 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
     try { return text ? JSON.parse(text) : null; }
     catch { fail(503, 'access_unavailable', 'Shared user controls returned an invalid response.'); }
   }
-  async function upstream(body, signal) {
+  async function upstream(body, signal, process, engine) {
     const route = resolveRoute(config, body.model), request = validateChat(body, route);
+    if (request.stream) request.stream_options = { ...request.stream_options, include_usage: true };
+    const call = monitoring.call(process, route, engine);
     let response;
     try { response = await fetcher(`${route.baseUrl}/chat/completions`, { method: 'POST', redirect: 'error',
       headers: { Authorization: `Bearer ${route.key}`, 'Content-Type': 'application/json' }, body: JSON.stringify(request), signal }); }
-    catch (error) { if (signal.aborted) throw error; fail(502, 'provider_unavailable', 'The model provider is unavailable.'); }
+    catch (error) { monitoring.finishCall(call, signal.aborted ? 'cancelled' : 'failed'); if (signal.aborted) throw error; fail(502, 'provider_unavailable', 'The model provider is unavailable.'); }
     if (!response.ok) {
+      monitoring.finishCall(call, 'failed', undefined, response.status);
       await response.body?.cancel();
       const code = { 401: 'provider_key_rejected', 402: 'provider_credits_required', 429: 'provider_busy' }[response.status] || 'provider_error';
       fail([402, 429].includes(response.status) ? response.status : 502, code, 'The provider could not complete this request.');
     }
-    return { response, route };
+    return { response, route, call };
   }
-  async function runEngine(engine, input, signal) {
-    const { response, route } = await upstream(engineRequest(engine, input), signal);
-    const data = await boundedJson(Readable.fromWeb(response.body), 8000000, true);
-    return { engine: { id: engine.id, version: engine.version }, model: route.alias, providerModel: route.model,
-      ...validateResult(data, input.sources), usage: data.usage };
+  async function runEngine(engine, input, signal, process) {
+    const { response, route, call } = await upstream(engineRequest(engine, input), signal, process, engine);
+    try {
+      const data = await boundedJson(Readable.fromWeb(response.body), 8000000, true);
+      monitoring.finishCall(call, 'completed', data.usage, response.status);
+      return { engine: { id: engine.id, version: engine.version }, model: route.alias, providerModel: route.model,
+        ...validateResult(data, input.sources), usage: data.usage };
+    } catch (error) { monitoring.finishCall(call, signal.aborted ? 'cancelled' : 'failed'); throw error; }
   }
   const server = http.createServer(async (req, res) => {
     const requestId = randomUUID(), started = Date.now();
-    let operation = 'request', admitted = false, timer;
+    let operation = 'request', admitted = false, timer, process;
     const controller = new AbortController();
+    async function finishProcess(status, errorCode) {
+      try { await monitoring.finish(process, status, errorCode); }
+      catch { logger({ service: 'colossus', requestId, operation: 'usage_record_failed', code: 'usage_unavailable' }); }
+    }
+    async function complete(body, status = 'completed') { await finishProcess(status); return json(res, body); }
     res.once('close', () => { if (!res.writableFinished) controller.abort(); });
     res.setHeader('X-Request-Id', requestId);
     res.setHeader('Cache-Control', 'no-store');
@@ -149,7 +168,7 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
         try { data = await response.json(); }
         catch { fail(503, 'auth_unavailable', 'The shared sign-in service returned an invalid session.'); }
         if (!data || typeof data.access_token !== 'string' || !data.access_token || /\s/.test(data.access_token) || data.access_token.length > 16000) fail(503, 'auth_unavailable', 'The shared sign-in service returned an invalid session.');
-        const identity = await userFor(data.access_token), previous = sessionId(req);
+        const identity = requireConsoleAdmin(await userFor(data.access_token)), previous = sessionId(req);
         if (previous) await sessions.revoke(previous);
         const session = await sessions.create(data.access_token, data.expires_in ?? 3600);
         res.setHeader('Set-Cookie', cookie(session.id, session.seconds));
@@ -158,6 +177,11 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
       if (method === 'DELETE' && url.pathname === '/session') {
         operation = 'sign_out'; checkOrigin(req); await sessions.revoke(sessionId(req));
         res.setHeader('Set-Cookie', cookie('', 0)); return json(res, { signedOut: true });
+      }
+      if (url.pathname === '/v1/monitoring') {
+        operation = 'monitoring'; await browserIdentity(req);
+        if (method !== 'GET') fail(405, 'method_not_allowed', 'Use GET for usage monitoring.');
+        return json(res, await monitoring.snapshot(Number(url.searchParams.get('days') || 1), url.searchParams.get('userId') || ''));
       }
       if (url.pathname === '/v1/access/users') {
         operation = 'user_access';
@@ -197,14 +221,25 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
       if (!(req.headers['content-type'] || '').startsWith('application/json')) fail(415, 'content_type', 'Use application/json.');
       const body = await boundedJson(req, config.bodyLimit);
       if (!body || typeof body !== 'object' || Array.isArray(body)) fail(400, 'invalid_request', 'Supply a JSON object.');
+      const inferenceOperations = { '/v1/chat/completions': 'chat', '/v1/runs': 'run_engine', '/v1/engines/test': 'test_engine', '/v1/evaluations': 'evaluate' };
+      if (Object.hasOwn(inferenceOperations, url.pathname)) {
+        operation = inferenceOperations[url.pathname];
+        if (['test_engine', 'evaluate'].includes(operation) && !identity.admin) fail(403, 'admin_required', 'Only admins can test or evaluate engines.');
+        process = await monitoring.start(identity, requestId, operation);
+      }
       if (url.pathname === '/v1/chat/completions') {
-        operation = 'chat'; const { response } = await upstream(body, controller.signal);
+        operation = 'chat'; const { response, call } = await upstream(body, controller.signal, process);
         if (body.stream) {
           if (!response.headers.get('content-type')?.includes('text/event-stream')) fail(502, 'invalid_stream', 'The provider did not return an event stream.');
           res.writeHead(200, { 'Content-Type': 'text/event-stream', 'X-Accel-Buffering': 'no' });
-          await pipeline(Readable.fromWeb(response.body), res, { signal: controller.signal }); return;
+          const meter = new UsageStream(usage => { call.usage = tokenUsage(usage); });
+          await pipeline(Readable.fromWeb(response.body), meter, res, { signal: controller.signal, end: false });
+          monitoring.finishCall(call, 'completed', undefined, response.status);
+          await finishProcess('completed'); res.end(); return;
         }
-        return json(res, await boundedJson(Readable.fromWeb(response.body), 8000000, true));
+        const data = await boundedJson(Readable.fromWeb(response.body), 8000000, true);
+        monitoring.finishCall(call, 'completed', data.usage, response.status);
+        return await complete(data);
       }
       if (url.pathname === '/v1/engines') {
         operation = 'create_engine'; if (!identity.admin) fail(403, 'admin_required', 'Only admins can create engine versions.');
@@ -212,11 +247,11 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
       }
       if (url.pathname === '/v1/engines/test') {
         operation = 'test_engine'; if (!identity.admin) fail(403, 'admin_required', 'Only admins can test draft engines.');
-        return json(res, await runEngine(validateEngine(body.engine), body.input, controller.signal));
+        return await complete(await runEngine(validateEngine(body.engine), body.input, controller.signal, process));
       }
       if (url.pathname === '/v1/runs') {
         operation = 'run_engine'; const engine = await registry.get(body.engineId, body.engineVersion);
-        return json(res, { requestId, ...await runEngine(engine, body.input, controller.signal) });
+        return await complete({ requestId, ...await runEngine(engine, body.input, controller.signal, process) });
       }
       if (url.pathname === '/v1/evaluations') {
         operation = 'evaluate'; if (!identity.admin) fail(403, 'admin_required', 'Only admins can run evaluation suites.');
@@ -231,7 +266,7 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
         const results = [];
         for (const item of body.cases) {
           try {
-            const result = await runEngine(engine, item.input, controller.signal);
+            const result = await runEngine(engine, item.input, controller.signal, process);
             const passed = result.claims.length >= item.minClaims && (!item.requiredQuote || result.claims.some(c => normalizedQuote(c.quote) === normalizedQuote(item.requiredQuote))) && result.excluded.length === 0;
             results.push({ name: item.name, passed, ...result });
           } catch (error) {
@@ -239,11 +274,12 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
             results.push({ name: item.name, passed: false, error: error instanceof ApiError ? error.code : 'evaluation_failed' });
           }
         }
-        return json(res, { engine: { id: engine.id, version: engine.version }, passed: results.filter(r => r.passed).length, total: results.length, results,
-          limitation: 'These checks measure output traceability and fixture expectations; they do not establish real-world accuracy.' });
+        return await complete({ engine: { id: engine.id, version: engine.version }, passed: results.filter(r => r.passed).length, total: results.length, results,
+          limitation: 'These checks measure output traceability and fixture expectations; they do not establish real-world accuracy.' }, results.some(r => r.error) ? 'failed' : 'completed');
       }
       fail(404, 'not_found', 'Unknown API route.');
     } catch (error) {
+      await finishProcess(controller.signal.aborted ? 'cancelled' : 'failed', controller.signal.aborted ? 'request_timeout' : error instanceof ApiError ? error.code : 'service_error');
       if (!res.headersSent && !res.destroyed) {
         const timedOut = controller.signal.aborted;
         json(res, { error: { code: timedOut ? 'request_timeout' : error instanceof ApiError ? error.code : 'service_error',
@@ -257,7 +293,7 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
   server.requestTimeout = Math.min(config.timeout, 30000);
   server.headersTimeout = 10000;
   server.keepAliveTimeout = 5000;
-  return { server, registry, sessions, drain() { draining = true; server.close(); }, get inflight() { return inflight; } };
+  return { server, registry, sessions, monitoring, drain() { draining = true; server.close(); }, get inflight() { return inflight; } };
 }
 const normalizedQuote = s => s.replace(/\s+/g, ' ').trim();
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

@@ -34,7 +34,16 @@ export function configuration(env = process.env) {
     route.baseUrl = url.href.replace(/\/$/, '');
   }
   const origin = env.COLOSSUS_ORIGIN || `http://localhost:${env.PORT || 4002}`;
-  for (const field of ['COLOSSUS_ENGINE_BUCKET', 'COLOSSUS_SESSION_BUCKET']) {
+  const pricing = JSON.parse(env.COLOSSUS_PRICING_JSON || '{}');
+  if (!pricing || typeof pricing !== 'object' || Array.isArray(pricing)) throw Error('Invalid COLOSSUS_PRICING_JSON');
+  for (const [alias, price] of Object.entries(pricing)) {
+    if (!Object.hasOwn(routes, alias) || !price || typeof price !== 'object' || Array.isArray(price) ||
+      !['inputPerMillion', 'outputPerMillion'].every(k => typeof price[k] === 'number' && Number.isFinite(price[k]) && price[k] >= 0 && price[k] <= 1000000) ||
+      (price.cachedInputPerMillion !== undefined && (typeof price.cachedInputPerMillion !== 'number' || !Number.isFinite(price.cachedInputPerMillion) || price.cachedInputPerMillion < 0 || price.cachedInputPerMillion > 1000000))) throw Error('Invalid route pricing');
+    routes[alias].pricing = { currency: 'USD', inputPerMillion: price.inputPerMillion, outputPerMillion: price.outputPerMillion,
+      ...(price.cachedInputPerMillion !== undefined ? { cachedInputPerMillion: price.cachedInputPerMillion } : {}) };
+  }
+  for (const field of ['COLOSSUS_ENGINE_BUCKET', 'COLOSSUS_SESSION_BUCKET', 'COLOSSUS_USAGE_BUCKET']) {
     if (env[field] && !/^[a-z0-9][a-z0-9.-]{1,220}[a-z0-9]$/.test(env[field])) throw Error(`Invalid ${field}`);
   }
   if (env.COLOSSUS_SESSION_SECRET && env.COLOSSUS_SESSION_SECRET.length < 32) throw Error('COLOSSUS_SESSION_SECRET needs at least 32 characters');
@@ -46,6 +55,7 @@ export function configuration(env = process.env) {
     supabaseUrl: env.SUPABASE_URL || '', anonKey: env.SUPABASE_ANON_KEY || '',
     serviceKey: env.SUPABASE_SERVICE_ROLE_KEY || '', engineFile: env.COLOSSUS_ENGINE_FILE || '',
     engineBucket: env.COLOSSUS_ENGINE_BUCKET || '', sessionBucket: env.COLOSSUS_SESSION_BUCKET || env.COLOSSUS_ENGINE_BUCKET || '',
+    usageBucket: env.COLOSSUS_USAGE_BUCKET || env.COLOSSUS_ENGINE_BUCKET || '',
     sessionSecret: env.COLOSSUS_SESSION_SECRET || providerKey || Object.values(routes)[0].key,
     production: env.NODE_ENV === 'production' };
 }

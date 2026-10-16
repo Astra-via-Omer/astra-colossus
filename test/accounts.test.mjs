@@ -80,12 +80,15 @@ test('live protected roles, disabled state and assignment determine permissions 
   const app = await start(t), { cookie } = await app.login();
   for (const role of ['participant', 'reader', 'viewer']) {
     app.state.user.app_metadata = { role }; app.state.user.user_metadata = { role: 'admin' };
-    const profile = await (await app.call('/session', cookie)).json(); assert.equal(profile.user.role, role);
-    assert.equal(profile.permissions.manageUsers, false); assert.equal(profile.permissions.test, false); assert.equal(profile.permissions.run, true);
+    assert.equal((await app.call('/session', cookie)).status, 403);
+    assert.equal((await app.call('/app', cookie)).status, 303);
+    const login = await app.call('/session', undefined, 'POST', { email: 'admin@example.com', password: app.state.password });
+    assert.equal(login.status, 403); assert(!login.headers.has('set-cookie'));
+    assert.equal((await app.call('/v1/monitoring', cookie)).status, 403);
     assert.equal((await app.call('/v1/access/users', cookie)).status, 403);
     for (const route of ['/v1/engines', '/v1/engines/test', '/v1/evaluations']) assert.equal((await app.call(route, cookie, 'POST', {})).status, 403);
   }
-  for (const metadata of [{ role: 'admin', disabled: true }, { role: 'reader', colossus: { enabled: false } }, { role: 'unassigned' }, {}]) {
+  for (const metadata of [{ role: 'admin', disabled: true }, { role: 'reader', colossus: { enabled: false } }, { role: 'admin', system_access: { colossus: false } }, { role: 'unassigned' }, {}]) {
     app.state.user.app_metadata = metadata;
     assert.equal((await app.call('/session', cookie)).status, 403);
     assert.equal((await app.call('/v1/models', cookie)).status, 403);

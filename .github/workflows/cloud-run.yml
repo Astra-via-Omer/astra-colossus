@@ -90,6 +90,7 @@ jobs:
             COLOSSUS_ORIGIN=https://colossus.astra-via.com
             COLOSSUS_MAX_INFLIGHT=16
             COLOSSUS_ENGINE_BUCKET=${{ vars.COLOSSUS_ENGINE_BUCKET }}
+            COLOSSUS_PRICING_JSON='${{ vars.COLOSSUS_PRICING_JSON || '{}' }}'
             SUPABASE_URL=${{ vars.SUPABASE_URL }}
             SUPABASE_ANON_KEY=${{ vars.SUPABASE_ANON_KEY }}
           secrets: |

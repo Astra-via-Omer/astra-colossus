@@ -29,6 +29,14 @@ Browser sessions use the same private bucket (or `COLOSSUS_SESSION_BUCKET` if ex
 
 Inference results, source text and evaluation reports are returned to callers and not retained by Colossus. For long evaluations and later live media, add durable jobs/sessions and distributed per-client quotas. Current limits bound concurrency without guaranteeing latency or provider quotas.
 
+## Monitoring configuration
+
+The browser console and `GET /v1/monitoring` require a current, enabled Astra admin account with Colossus access. Account bearer calls from Enigma retain existing inference access and are recorded against the verified user. Service credentials cannot read browser monitoring.
+
+Usage history defaults to the existing private engine bucket under `usage/v1/`. No new database migration or IAM scope is needed with that bucket. A separate `COLOSSUS_USAGE_BUCKET` needs Object Viewer and Object Creator for the runtime identity. Production refuses inference if its start record cannot be stored. Completion-write failures preserve the paid result, emit a sanitized operational error and leave an incomplete start record. Immutable history is shared across instances, including restarts. The current lifecycle rule applies only to sessions, so usage retention requires a separate operational policy.
+
+Set the repository variable `COLOSSUS_PRICING_JSON` to verified USD-per-million input, cached-input and output prices keyed by configured model alias (see README). The workflow quotes the JSON to preserve its commas. Missing or empty configuration deploys `{}` and displays unavailable cost, never a zero-priced inference. Rate snapshots are saved per call; a later price update affects new calls only. For direct deployments, set the environment variable of the same name. The illustrative rates in `.env.example` are not production provider prices.
+
 ## Custom domain
 
 Shared load balancer: `astra-website-lb`, address `34.49.17.123`.

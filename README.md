@@ -14,7 +14,7 @@ cp .env.example .env.local
 node --env-file=.env.local src/server.mjs
 ```
 
-Open http://localhost:4002 for the welcome page. Sign in with the same email and password used in Astra Workflow and Lab. `/app` is a server-protected engine room; service keys cannot open it or the browser user controls. Active shared admin, participant, reader and viewer accounts can run saved engines. Only admins can create/test/evaluate engine versions and manage shared user access. Protected `app_metadata.colossus.enabled=false`, disabled/banned/deleted accounts and unassigned roles deny entry.
+Open http://localhost:4002 for the welcome page. Sign in with the same email and password used in Astra Workflow and Lab. `/app` is a server-protected, **admin-only** engine room with usage monitoring; service keys cannot open it, monitoring or browser user controls. Non-admin sign-in is rejected before a browser session is created, and role changes revoke console access on the next request. Connected backends such as Enigma retain authenticated inference with their users’ existing account roles. Protected `app_metadata.colossus.enabled=false`, a denied `system_access.colossus` assignment, disabled/banned/deleted accounts and unassigned roles deny account access.
 
 Browser sessions use opaque, host-only HttpOnly cookies with SameSite Strict, Secure in production and a maximum one-hour lifetime. The Supabase access token stays encrypted on the server, outside browser storage and API responses. Production sessions use private Cloud Storage shared across instances; development can use process memory. Expiry and logout are enforced server-side, including replay from another instance. The account backend checks current protected roles and enabled state on every protected request; the console also checks every 15 seconds and on focus. This release reuses the shared authentication backend; it does not add cross-domain single sign-on or a separate future JWT issuer.
 
@@ -28,7 +28,23 @@ The separate Personal Workspace repository includes the optional `colossus` Comp
 
 The welcome page and protected engine room share Astra Via's official logo assets, navy/cyan palette and constellation motif. The Appearance control offers **Dark · Constellation** (default) and **Light · Clarity**. It remembers the selection on this browser for both pages and synchronizes open Colossus tabs. Storage being unavailable does not prevent changing the current page's theme. Theme changes preserve sign-in, evidence and unsaved engine drafts.
 
-The public page explains the source-to-result process, the two built-in engines and the current 20% identity / 60% support / 20% reasoning weights. The signed-in service summary reads engine-version counts, configured model-route counts and registry configuration from the existing protected API; it does not represent provider health, run history or invented activity metrics. Shared account protections and inference behavior are unchanged.
+The public page explains the source-to-result process, the two built-in engines and the current 20% identity / 60% support / 20% reasoning weights. The signed-in service summary reads engine-version counts, configured model-route counts and registry configuration from the existing protected API. The separate admin monitoring dashboard reads recorded activity; it does not claim provider health.
+
+## Usage, processing time and cost
+
+After admin sign-in, **Usage & monitoring** shows activity for all verified accounts and service callers. Filter by the last 24 hours, 7 days or 30 days, and select an account. It refreshes every 15 seconds while visible. Model-route and account summaries show token counts, estimated cost and processing duration. Expand a recent process to inspect its model calls, engine/version, status, duration, token subsets and saved rates. Running, completed, failed, cancelled and stale processes remain distinguishable. Evaluation cases count as separate model calls within one process; paid usage is retained even if output validation fails.
+
+Every inference process writes an immutable start record before calling a provider and a completion record before returning. Production history uses private Cloud Storage, defaulting to `COLOSSUS_ENGINE_BUCKET`; `COLOSSUS_USAGE_BUCKET` selects a separate private bucket with the same runtime read/create permissions. Local development uses bounded process memory and labels its reset-on-restart behavior. Records contain verified account ID/email or an opaque service-key fingerprint, model identity, engine identity, timestamps, status, token usage and rates. They exclude evidence, prompts, generated text, passwords and tokens. Services using a shared machine credential are grouped under that credential; Colossus cannot infer their end user. Enigma’s account bearer calls are attributed to the verified account. History starts with this release; earlier activity is not reconstructed.
+
+Configure **`COLOSSUS_PRICING_JSON`** using verified provider prices for each configured route alias, in **USD per million tokens**. The GitHub Actions deployment reads the repository variable with the same name; an empty variable deploys `{}` and shows costs as unavailable. Example with **illustrative prices only**:
+
+```json
+{"astra-default":{"inputPerMillion":2,"cachedInputPerMillion":0.5,"outputPerMillion":4}}
+```
+
+Cost is `((input − cached input) × input rate + cached input × cached rate + output × output rate) / 1,000,000`. Cached input and reasoning are subsets, never added twice. Missing cached counts prevent exact pricing when cache and input rates differ. Missing/inconsistent token usage or missing prices are explicitly incomplete; missing amounts are unavailable, not free. Each call saves its rate snapshot, so later configuration changes do not reprice history. Cost per token and per processing minute use only calls with known estimated cost. Call duration includes provider wait and network time; overlapping durations are summed, not interpreted as service uptime or GPU compute time. Estimates exclude infrastructure, tax and other provider charges.
+
+Queries inspect at most the most recent 1,000 processes across all users in the selected time window, then apply the account filter; this limit is disclosed when reached. The process list shows the newest 100 matching records; summaries cover the full bounded sample. Immutable completion objects are cached in memory to avoid repeated object reads. A start without a completion beyond the request deadline plus 30 seconds is marked stale with incomplete usage/cost, never assumed free or successful. Start-record storage failure prevents inference; completion-write failure retains the paid result, emits a sanitized `usage_record_failed` operational log and leaves the durable record incomplete. The existing session lifecycle rule does not delete `usage/` objects; apply an appropriate separate retention policy when operating this audit history.
 
 ## Engines and evaluations
 
@@ -50,6 +66,7 @@ Authenticate with `Authorization: Bearer <service key or shared-account access t
 | GET | `/app` | Account-only engine room; redirects signed-out/denied visitors |
 | POST / GET / DELETE | `/session` | Sign in, inspect current account, revoke browser session |
 | GET / PATCH | `/v1/access/users` | Account admin only: shared user list and reviewed role/state changes |
+| GET | `/v1/monitoring?days=1&userId=UUID` | Browser admin only: usage, cost and process history; days is 1, 7 or 30; userId is optional |
 | GET | `/healthz` | Liveness; no provider or database calls |
 | GET | `/v1/models` | Configured aliases and default provider model |
 | GET | `/v1/capabilities` | Model modalities, streaming, registry availability |
@@ -116,6 +133,6 @@ Set these as repository variables for the existing web deployment workflow after
 npm test
 ```
 
-The 18-test suite covers welcome/app separation, shared account roles, admin controls, logout replay, server expiry, encrypted cross-instance sessions, storage/auth outages, CSRF, provider key isolation, switching providers, modality rejection, streaming, local/shared engine persistence, exact quotations, evaluations, overload, cancellation and sanitized errors. In the separate Personal Workspace repository, `scripts/check-colossus.cjs` drives the actual HTTP gateway from the current workspace's review stages using a synthetic provider. No real model key or paid inference is needed for these checks.
+The test suite covers admin-only console and monitoring access, live role revocation, preserved backend inference, account attribution, cached/reasoning usage, cost snapshots, missing usage, evaluation/validation failures, streaming usage, shared durable history, and welcome/app separation, shared account roles, admin controls, logout replay, server expiry, encrypted cross-instance sessions, storage/auth outages, CSRF, provider key isolation, switching providers, modality rejection, streaming, local/shared engine persistence, exact quotations, evaluations, overload, cancellation and sanitized errors. In the separate Personal Workspace repository, `scripts/check-colossus.cjs` drives the actual HTTP gateway from the current workspace's review stages using a synthetic provider. No real model key or paid inference is needed for these checks.
 
 See [DEPLOYMENT.md](DEPLOYMENT.md) for the cloud and custom-domain steps.
