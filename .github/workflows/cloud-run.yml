@@ -79,6 +79,18 @@ jobs:
           gcloud auth configure-docker "$REGION-docker.pkg.dev" --quiet
           docker tag "astra-colossus:$GITHUB_SHA" "$REGION-docker.pkg.dev/$PROJECT/$REPOSITORY/astra-colossus:$GITHUB_SHA"
           docker push "$REGION-docker.pkg.dev/$PROJECT/$REPOSITORY/astra-colossus:$GITHUB_SHA"
+      - name: Prepare pricing configuration
+        id: pricing
+        env:
+          PRICING_JSON: ${{ vars.COLOSSUS_PRICING_JSON || '{}' }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          value = json.dumps(json.loads(os.environ['PRICING_JSON']), separators=(',', ':'))
+          escaped = value.replace('\\', '\\\\').replace(',', '\\,')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              print('value=' + escaped, file=output)
+          PY
       - uses: google-github-actions/deploy-cloudrun@2028e2d7d30a78c6910e0632e48dd561b064884d
         with:
           project_id: ${{ vars.GCP_PROJECT_ID }}
@@ -90,7 +102,7 @@ jobs:
             COLOSSUS_ORIGIN=https://colossus.astra-via.com
             COLOSSUS_MAX_INFLIGHT=16
             COLOSSUS_ENGINE_BUCKET=${{ vars.COLOSSUS_ENGINE_BUCKET }}
-            COLOSSUS_PRICING_JSON='${{ vars.COLOSSUS_PRICING_JSON || '{}' }}'
+            COLOSSUS_PRICING_JSON=${{ steps.pricing.outputs.value }}
             SUPABASE_URL=${{ vars.SUPABASE_URL }}
             SUPABASE_ANON_KEY=${{ vars.SUPABASE_ANON_KEY }}
           secrets: |
