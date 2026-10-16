@@ -48,6 +48,9 @@ export function configuration(env = process.env) {
     if (env[field] && !/^[a-z0-9][a-z0-9.-]{1,220}[a-z0-9]$/.test(env[field])) throw Error(`Invalid ${field}`);
   }
   if (env.COLOSSUS_SESSION_SECRET && env.COLOSSUS_SESSION_SECRET.length < 32) throw Error('COLOSSUS_SESSION_SECRET needs at least 32 characters');
+  if (env.COLOSSUS_CONTROL_DATABASE && !/^[a-z][a-z0-9-]{2,62}$/.test(env.COLOSSUS_CONTROL_DATABASE)) throw Error('Invalid control database ID');
+  if (env.COLOSSUS_VAULT_SECRET && env.COLOSSUS_VAULT_SECRET.length < 32) throw Error('COLOSSUS_VAULT_SECRET needs at least 32 characters');
+  if (env.NODE_ENV === 'production' && env.COLOSSUS_CONTROL_DATABASE && !env.COLOSSUS_VAULT_SECRET) throw Error('A dedicated COLOSSUS_VAULT_SECRET is required for the operations database');
   if (env.NODE_ENV === 'production' && !origin.startsWith('https://')) throw Error('Production needs an HTTPS COLOSSUS_ORIGIN');
   return { routes, keys, adminKey: env.COLOSSUS_ADMIN_KEY || '', origin,
     maxInflight: integer(env, 'COLOSSUS_MAX_INFLIGHT', 16, 1, 1000),
@@ -57,6 +60,8 @@ export function configuration(env = process.env) {
     serviceKey: env.SUPABASE_SERVICE_ROLE_KEY || '', engineFile: env.COLOSSUS_ENGINE_FILE || '',
     engineBucket: env.COLOSSUS_ENGINE_BUCKET || '', sessionBucket: env.COLOSSUS_SESSION_BUCKET || env.COLOSSUS_ENGINE_BUCKET || '',
     usageBucket: env.COLOSSUS_USAGE_BUCKET || env.COLOSSUS_ENGINE_BUCKET || '',
+    controlProject: env.GOOGLE_CLOUD_PROJECT || env.GCLOUD_PROJECT || 'astra-via', controlDatabase: env.COLOSSUS_CONTROL_DATABASE || '',
+    vaultSecret: env.COLOSSUS_VAULT_SECRET || '',
     sessionSecret: env.COLOSSUS_SESSION_SECRET || providerKey || Object.values(routes)[0].key,
     production: env.NODE_ENV === 'production' };
 }
@@ -73,7 +78,7 @@ export function validateChat(body, route) {
       (body.stream !== undefined && typeof body.stream !== 'boolean')) fail(400, 'invalid_request', 'Supply 1–200 chat messages and a boolean stream option.');
   const modalities = new Set(['text']);
   for (const message of body.messages) {
-    if (!message || !['system', 'user', 'assistant', 'tool'].includes(message.role)) fail(400, 'invalid_message', 'Invalid message role.');
+    if (!message || !['system', 'developer', 'user', 'assistant', 'tool'].includes(message.role)) fail(400, 'invalid_message', 'Invalid message role.');
     if (typeof message.content === 'string') continue;
     if (message.role === 'assistant' && message.content === null && Array.isArray(message.tool_calls)) continue;
     if (!Array.isArray(message.content) || !message.content.length) fail(400, 'invalid_content', 'Supply text or typed content parts.');

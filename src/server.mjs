@@ -9,6 +9,9 @@ import { EngineRegistry, validateEngine, engineRequest, validateResult } from '.
 import { CloudRegistry } from './cloudRegistry.mjs';
 import { Sessions } from './sessions.mjs';
 import { UsageMonitor, UsageStream, tokenUsage } from './usage.mjs';
+import { ControlPlane } from './controlPlane.mjs';
+import { endpointFetch } from './endpoints.mjs';
+import { providerRequest, providerResult, AnthropicStream } from './providerAdapters.mjs';
 
 async function boundedJson(stream, limit, upstream = false) {
   const chunks = []; let size = 0;
@@ -20,11 +23,12 @@ async function boundedJson(stream, limit, upstream = false) {
   try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); }
   catch { fail(upstream ? 502 : 400, upstream ? 'invalid_provider_json' : 'invalid_json', upstream ? 'The provider returned invalid JSON.' : 'Supply valid JSON.'); }
 }
-export function createService(config, { fetcher = fetch, logger = entry => console.log(JSON.stringify(entry)) } = {}) {
+export function createService(config, { fetcher = fetch, logger = entry => console.log(JSON.stringify(entry)), controlStore, endpointFetcher = fetcher === fetch ? endpointFetch : fetcher } = {}) {
   const registry = config.engineBucket ? new CloudRegistry(config.engineBucket, fetcher) : new EngineRegistry(config, fetcher);
   const sessions = new Sessions(config, fetcher);
   const monitoring = new UsageMonitor(config, fetcher);
-  let inflight = 0, draining = false;
+  const control = new ControlPlane(config, fetcher, endpointFetcher, controlStore), activeControllers = new Map();
+  let inflight = 0, controlInflight = 0, draining = false;
   const json = (res, body, status = 200) => {
     res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
     res.end(JSON.stringify(body));
@@ -72,11 +76,17 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
       evaluate: identity.admin, manageUsers: identity.admin, monitoring: identity.admin } });
   async function authenticate(req) {
     const bearer = /^Bearer (\S+)$/.exec(req.headers.authorization || '')?.[1];
+    const clientHeader = req.headers['x-colossus-service-key'];
+    const client = clientHeader ? await control.authenticateKey(clientHeader) : null;
+    if (clientHeader && !client) fail(401, 'service_key_invalid', 'Supply a valid Colossus system key.');
+    const scoped = bearer?.startsWith('cs_') ? await control.authenticateKey(bearer) : null;
+    if (scoped) return scoped;
+    const attach = identity => client ? { ...identity, systemId: client.systemId, keyId: client.keyId, allowedModels: client.allowedModels } : identity;
     const serviceId = () => 'service-' + createHash('sha256').update('colossus-usage\0').update(bearer).digest('hex').slice(0, 12);
-    if (config.adminKey && equalSecret(bearer, config.adminKey)) return { kind: 'service', id: serviceId(), admin: true };
-    if (config.keys.some(key => equalSecret(bearer, key))) return { kind: 'service', id: serviceId(), admin: !config.adminKey };
-    if (bearer) return userFor(bearer);
-    return browserIdentity(req);
+    if (config.adminKey && equalSecret(bearer, config.adminKey)) return attach({ kind: 'service', id: serviceId(), admin: true });
+    if (config.keys.some(key => equalSecret(bearer, key))) return attach({ kind: 'service', id: serviceId(), admin: !config.adminKey });
+    if (bearer) return attach(await userFor(bearer));
+    return attach(await browserIdentity(req));
   }
   const cookie = (token, seconds) => `colossus_session=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${seconds}${config.production ? '; Secure' : ''}`;
   async function accountRpc(identity, name, body) {
@@ -91,13 +101,28 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
     try { return text ? JSON.parse(text) : null; }
     catch { fail(503, 'access_unavailable', 'Shared user controls returned an invalid response.'); }
   }
-  async function upstream(body, signal, process, engine) {
-    const route = resolveRoute(config, body.model), request = validateChat(body, route);
+  async function upstream(body, signal, process, engine, identity, task = 'chat') {
+    const route = await control.route(body.model);
+    if ((route.task || 'chat') !== task) fail(400, 'model_task', 'Choose a model route configured for this operation.');
+    let request;
+    if (task === 'embedding') {
+      if (!(typeof body.input === 'string' || (Array.isArray(body.input) && body.input.length > 0 && body.input.length <= 128 && body.input.every(value => typeof value === 'string')))) fail(400, 'invalid_embedding', 'Supply text or up to 128 text inputs.');
+      request = { model: route.model, input: body.input, ...(body.encoding_format ? { encoding_format: body.encoding_format } : {}) };
+      if (body.dimensions !== undefined) { if (!Number.isInteger(body.dimensions) || body.dimensions < 1 || body.dimensions > 65536) fail(400, 'invalid_dimensions', 'Choose a valid embedding dimension.'); request.dimensions = body.dimensions; }
+    } else {
+      request = validateChat(body, route);
+      if (request.max_tokens > (route.maxTokens || 65536)) fail(400, 'route_output_limit', 'This request exceeds the model route’s configured output limit.');
+      request.max_tokens ??= route.maxTokens || 4000;
+    }
     if (request.stream) request.stream_options = { ...request.stream_options, include_usage: true };
+    const prepared = providerRequest(route, request, task);
+    const reservation = await control.reserve(identity, route, request, process.requestId, process.calls.length + 1);
     const call = monitoring.call(process, route, engine);
+    call.reservation = reservation;
+    call.providerId = route.providerId || null;
     let response;
-    try { response = await fetcher(`${route.baseUrl}/chat/completions`, { method: 'POST', redirect: 'error',
-      headers: { Authorization: `Bearer ${route.key}`, 'Content-Type': 'application/json' }, body: JSON.stringify(request), signal }); }
+    try { response = await (route.managed || !control.enabled ? fetcher : endpointFetcher)(prepared.url, { method: 'POST', redirect: 'error',
+      headers: prepared.headers, body: JSON.stringify(prepared.request), signal }); }
     catch (error) { monitoring.finishCall(call, signal.aborted ? 'cancelled' : 'failed'); if (signal.aborted) throw error; fail(502, 'provider_unavailable', 'The model provider is unavailable.'); }
     if (!response.ok) {
       monitoring.finishCall(call, 'failed', undefined, response.status);
@@ -107,10 +132,10 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
     }
     return { response, route, call };
   }
-  async function runEngine(engine, input, signal, process) {
-    const { response, route, call } = await upstream(engineRequest(engine, input), signal, process, engine);
+  async function runEngine(engine, input, signal, process, identity) {
+    const { response, route, call } = await upstream(engineRequest(engine, input), signal, process, engine, identity);
     try {
-      const data = await boundedJson(Readable.fromWeb(response.body), 8000000, true);
+      const data = providerResult(route, await boundedJson(Readable.fromWeb(response.body), 8000000, true));
       monitoring.finishCall(call, 'completed', data.usage, response.status);
       return { engine: { id: engine.id, version: engine.version }, model: route.alias, providerModel: route.model,
         ...validateResult(data, input.sources), usage: data.usage };
@@ -118,10 +143,16 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
   }
   const server = http.createServer(async (req, res) => {
     const requestId = randomUUID(), started = Date.now();
-    let operation = 'request', admitted = false, timer, process;
+    let operation = 'request', admitted = false, timer, process, cancellationTimer;
     const controller = new AbortController();
     async function finishProcess(status, errorCode) {
-      try { await monitoring.finish(process, status, errorCode); }
+      try {
+        await monitoring.finish(process, status, errorCode);
+        if (process) {
+          for (const call of process.calls) if (call.reservation) await control.settle(call.reservation, call);
+          await control.finishProcess(process);
+        }
+      }
       catch { logger({ service: 'colossus', requestId, operation: 'usage_record_failed', code: 'usage_unavailable' }); }
     }
     async function complete(body, status = 'completed') { await finishProcess(status); return json(res, body); }
@@ -134,12 +165,14 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
     try {
       const url = new URL(req.url, config.origin), method = req.method;
       if (method === 'GET' && url.pathname === '/healthz') { operation = 'health'; return json(res, { service: 'colossus', status: draining ? 'draining' : 'ready' }, draining ? 503 : 200); }
-      const assets = { '/': ['welcome.html', 'text/html'], '/welcome.js': ['welcome.js', 'text/javascript'], '/console.js': ['console.js', 'text/javascript'], '/console.css': ['console.css', 'text/css'], '/theme.js': ['theme.js', 'text/javascript'], '/astra-logo.svg': ['astra-logo.svg', 'image/svg+xml'], '/astra-logo-light.svg': ['astra-logo-light.svg', 'image/svg+xml'], '/astra-icon.svg': ['astra-icon.svg', 'image/svg+xml'] };
+      const assets = { '/': ['welcome.html', 'text/html'], '/welcome.js': ['welcome.js', 'text/javascript'], '/console.js': ['console.js', 'text/javascript'], '/console.css': ['console.css', 'text/css'], '/operations.js': ['operations.js', 'text/javascript'], '/operations.css': ['operations.css', 'text/css'], '/theme.js': ['theme.js', 'text/javascript'], '/astra-logo.svg': ['astra-logo.svg', 'image/svg+xml'], '/astra-logo-light.svg': ['astra-logo-light.svg', 'image/svg+xml'], '/astra-icon.svg': ['astra-icon.svg', 'image/svg+xml'] };
       const asset = Object.hasOwn(assets, url.pathname) ? assets[url.pathname] : undefined;
       if (method === 'GET' && asset) { operation = 'console'; res.writeHead(200, { 'Content-Type': `${asset[1]}; charset=utf-8` }); return res.end(await readFile(new URL(asset[0], import.meta.url))); }
       if (draining) fail(503, 'draining', 'Colossus is shutting down. Retry another instance.');
-      if (inflight >= config.maxInflight) { res.setHeader('Retry-After', '2'); fail(429, 'capacity', 'This instance is at capacity. Retry shortly.'); }
-      inflight++; admitted = true;
+      const management = url.pathname.startsWith('/v1/control') || url.pathname === '/v1/monitoring' || url.pathname === '/session';
+      if (management ? controlInflight >= 8 : inflight >= config.maxInflight) { res.setHeader('Retry-After', '2'); fail(429, 'capacity', 'This instance is at capacity. Retry shortly.'); }
+      if (management) controlInflight++; else inflight++;
+      admitted = management ? 'control' : 'inference';
       timer = setTimeout(() => controller.abort(), config.timeout);
       if (method === 'GET' && url.pathname === '/app') {
         operation = 'engine_room';
@@ -181,7 +214,26 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
       if (url.pathname === '/v1/monitoring') {
         operation = 'monitoring'; await browserIdentity(req);
         if (method !== 'GET') fail(405, 'method_not_allowed', 'Use GET for usage monitoring.');
-        return json(res, await monitoring.snapshot(Number(url.searchParams.get('days') || 1), url.searchParams.get('userId') || ''));
+        const snapshot = await monitoring.snapshot(Number(url.searchParams.get('days') || 1), url.searchParams.get('userId') || '');
+        if (control.enabled) { await control.ensure(); const models = await control.store.list('models'); snapshot.rates = models.map(model => ({ route: model.id, providerModel: model.model, rates: model.pricing })); }
+        return json(res, snapshot);
+      }
+      if (url.pathname === '/v1/control' || url.pathname.startsWith('/v1/control/')) {
+        operation = 'control_plane'; const actor = await browserIdentity(req);
+        if (method === 'GET' && url.pathname === '/v1/control') return json(res, await control.snapshot());
+        if (!['POST', 'PATCH'].includes(method)) fail(405, 'method_not_allowed', 'Use the supported operations control method.');
+        if (!(req.headers['content-type'] || '').startsWith('application/json')) fail(415, 'content_type', 'Use application/json.');
+        const body = await boundedJson(req, 32768);
+        if (!body || typeof body !== 'object' || Array.isArray(body)) fail(400, 'invalid_request', 'Supply a JSON object.');
+        const path = url.pathname.slice('/v1/control/'.length).split('/');
+        if (path.length === 1 && ['providers', 'models', 'systems', 'integrations', 'jobs'].includes(path[0])) return json(res, { record: await control.save(path[0], body, actor) });
+        if (path.length === 1 && path[0] === 'keys' && method === 'POST') return json(res, await control.issueKey(body, actor), 201);
+        if (path.length === 3 && ['providers', 'integrations'].includes(path[0]) && path[2] === 'check') return json(res, await control.checkConnection(path[0], path[1], actor));
+        if (path.length === 3 && path[0] === 'keys' && path[2] === 'revoke') return json(res, await control.revokeKey(path[1], actor));
+        if (path.length === 3 && path[0] === 'processes' && path[2] === 'cancel') {
+          const result = await control.cancelProcess(path[1], actor); activeControllers.get(path[1])?.abort('admin_cancelled'); return json(res, result);
+        }
+        fail(404, 'not_found', 'Unknown operations control.');
       }
       if (url.pathname === '/v1/access/users') {
         operation = 'user_access';
@@ -212,46 +264,61 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
         operation = 'capabilities'; return json(res, { service: 'colossus', admin: identity.admin,
           engineCreation: hasRegistry(),
           streaming: 'sse', realtimeSession: false,
-          routes: Object.entries(config.routes).map(([id, route]) => ({ id, model: route.model, capabilities: route.capabilities })),
+          routes: await control.routes(identity),
           observer: { status: 'future_service', input: 'timestamped source sections, transcripts, or typed multimodal chat parts on capable routes' } });
       }
-      if (method === 'GET' && url.pathname === '/v1/models') { operation = 'models'; return json(res, { object: 'list', data: Object.entries(config.routes).flatMap(([id, route]) => [...new Set([id, route.model])].filter(name => name === id || id === 'astra-default').map(name => ({ id: name, object: 'model', owned_by: 'colossus', capabilities: route.capabilities }))) }); }
+      if (method === 'GET' && url.pathname === '/v1/models') { operation = 'models'; return json(res, { object: 'list', data: (await control.routes(identity)).flatMap(route => [...new Set([route.id, route.model])].filter(name => name === route.id || route.id === 'astra-default').map(name => ({ id: name, object: 'model', owned_by: 'colossus', capabilities: route.capabilities, task: route.task }))) }); }
       if (method === 'GET' && url.pathname === '/v1/engines') { operation = 'engines'; return json(res, { engines: await registry.list() }); }
       if (method !== 'POST') fail(404, 'not_found', 'Unknown API route.');
       if (!(req.headers['content-type'] || '').startsWith('application/json')) fail(415, 'content_type', 'Use application/json.');
       const body = await boundedJson(req, config.bodyLimit);
       if (!body || typeof body !== 'object' || Array.isArray(body)) fail(400, 'invalid_request', 'Supply a JSON object.');
-      const inferenceOperations = { '/v1/chat/completions': 'chat', '/v1/runs': 'run_engine', '/v1/engines/test': 'test_engine', '/v1/evaluations': 'evaluate' };
+      const inferenceOperations = { '/v1/chat/completions': 'chat', '/v1/embeddings': 'embedding', '/v1/runs': 'run_engine', '/v1/engines/test': 'test_engine', '/v1/evaluations': 'evaluate' };
       if (Object.hasOwn(inferenceOperations, url.pathname)) {
         operation = inferenceOperations[url.pathname];
         if (['test_engine', 'evaluate'].includes(operation) && !identity.admin) fail(403, 'admin_required', 'Only admins can test or evaluate engines.');
         process = await monitoring.start(identity, requestId, operation);
+        await control.startProcess(process); activeControllers.set(requestId, controller);
+        if (control.enabled) {
+          let checking = false;
+          cancellationTimer = setInterval(async () => {
+            if (checking || controller.signal.aborted) return; checking = true;
+            try { if (await control.cancellation(requestId)) controller.abort('admin_cancelled'); } catch {} finally { checking = false; }
+          }, 3000); cancellationTimer.unref();
+        }
+      }
+      if (url.pathname === '/v1/embeddings') {
+        const { response, call } = await upstream(body, controller.signal, process, null, identity, 'embedding');
+        const data = await boundedJson(Readable.fromWeb(response.body), 8000000, true);
+        monitoring.finishCall(call, 'completed', data.usage ? { ...data.usage, completion_tokens: 0, prompt_cache_hit_tokens: 0 } : undefined, response.status);
+        return await complete(data);
       }
       if (url.pathname === '/v1/chat/completions') {
-        operation = 'chat'; const { response, call } = await upstream(body, controller.signal, process);
+        operation = 'chat'; const { response, route, call } = await upstream(body, controller.signal, process, null, identity);
         if (body.stream) {
           if (!response.headers.get('content-type')?.includes('text/event-stream')) fail(502, 'invalid_stream', 'The provider did not return an event stream.');
           res.writeHead(200, { 'Content-Type': 'text/event-stream', 'X-Accel-Buffering': 'no' });
           const meter = new UsageStream(usage => { call.usage = tokenUsage(usage); });
-          await pipeline(Readable.fromWeb(response.body), meter, res, { signal: controller.signal, end: false });
+          const streams = [Readable.fromWeb(response.body), ...(route.protocol === 'anthropic' ? [new AnthropicStream(route)] : []), meter, res];
+          await pipeline(...streams, { signal: controller.signal, end: false });
           monitoring.finishCall(call, 'completed', undefined, response.status);
           await finishProcess('completed'); res.end(); return;
         }
-        const data = await boundedJson(Readable.fromWeb(response.body), 8000000, true);
+        const data = providerResult(route, await boundedJson(Readable.fromWeb(response.body), 8000000, true));
         monitoring.finishCall(call, 'completed', data.usage, response.status);
         return await complete(data);
       }
       if (url.pathname === '/v1/engines') {
         operation = 'create_engine'; if (!identity.admin) fail(403, 'admin_required', 'Only admins can create engine versions.');
-        resolveRoute(config, body.model); return json(res, { engine: await registry.create(body) }, 201);
+        await control.route(body.model); return json(res, { engine: await registry.create(body) }, 201);
       }
       if (url.pathname === '/v1/engines/test') {
         operation = 'test_engine'; if (!identity.admin) fail(403, 'admin_required', 'Only admins can test draft engines.');
-        return await complete(await runEngine(validateEngine(body.engine), body.input, controller.signal, process));
+        return await complete(await runEngine(validateEngine(body.engine), body.input, controller.signal, process, identity));
       }
       if (url.pathname === '/v1/runs') {
         operation = 'run_engine'; const engine = await registry.get(body.engineId, body.engineVersion);
-        return await complete({ requestId, ...await runEngine(engine, body.input, controller.signal, process) });
+        return await complete({ requestId, ...await runEngine(engine, body.input, controller.signal, process, identity) });
       }
       if (url.pathname === '/v1/evaluations') {
         operation = 'evaluate'; if (!identity.admin) fail(403, 'admin_required', 'Only admins can run evaluation suites.');
@@ -266,7 +333,7 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
         const results = [];
         for (const item of body.cases) {
           try {
-            const result = await runEngine(engine, item.input, controller.signal, process);
+            const result = await runEngine(engine, item.input, controller.signal, process, identity);
             const passed = result.claims.length >= item.minClaims && (!item.requiredQuote || result.claims.some(c => normalizedQuote(c.quote) === normalizedQuote(item.requiredQuote))) && result.excluded.length === 0;
             results.push({ name: item.name, passed, ...result });
           } catch (error) {
@@ -279,21 +346,23 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
       }
       fail(404, 'not_found', 'Unknown API route.');
     } catch (error) {
-      await finishProcess(controller.signal.aborted ? 'cancelled' : 'failed', controller.signal.aborted ? 'request_timeout' : error instanceof ApiError ? error.code : 'service_error');
+      const cancelled = controller.signal.reason === 'admin_cancelled';
+      await finishProcess(controller.signal.aborted ? 'cancelled' : 'failed', cancelled ? 'admin_cancelled' : controller.signal.aborted ? 'request_timeout' : error instanceof ApiError ? error.code : 'service_error');
       if (!res.headersSent && !res.destroyed) {
         const timedOut = controller.signal.aborted;
-        json(res, { error: { code: timedOut ? 'request_timeout' : error instanceof ApiError ? error.code : 'service_error',
-          message: timedOut ? 'The request exceeded its processing window or was cancelled.' : error instanceof ApiError ? error.message : 'The request could not be completed.', requestId } }, timedOut ? 504 : error instanceof ApiError ? error.status : 500);
+        json(res, { error: { code: cancelled ? 'admin_cancelled' : timedOut ? 'request_timeout' : error instanceof ApiError ? error.code : 'service_error',
+          message: cancelled ? 'An administrator cancelled this process.' : timedOut ? 'The request exceeded its processing window or was cancelled.' : error instanceof ApiError ? error.message : 'The request could not be completed.', requestId } }, cancelled ? 409 : timedOut ? 504 : error instanceof ApiError ? error.status : 500);
       } else if (!res.writableFinished) res.destroy();
     } finally {
-      clearTimeout(timer); if (admitted) inflight--;
+      clearTimeout(timer); clearInterval(cancellationTimer); activeControllers.delete(requestId);
+      if (admitted === 'control') controlInflight--; else if (admitted) inflight--;
       if (operation !== 'health') logger({ service: 'colossus', requestId, operation, status: res.statusCode, durationMs: Date.now() - started });
     }
   });
   server.requestTimeout = Math.min(config.timeout, 30000);
   server.headersTimeout = 10000;
   server.keepAliveTimeout = 5000;
-  return { server, registry, sessions, monitoring, drain() { draining = true; server.close(); }, get inflight() { return inflight; } };
+  return { server, registry, sessions, monitoring, control, drain() { draining = true; server.close(); }, get inflight() { return inflight; } };
 }
 const normalizedQuote = s => s.replace(/\s+/g, ' ').trim();
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

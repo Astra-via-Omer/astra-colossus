@@ -38,6 +38,7 @@ function clearPrivateState() {
   $('account-email').textContent = ''; $('account-role').textContent = ''; $('account-permissions').textContent = ''; $('account-expiry').textContent = '';
   $('greeting').textContent = 'Welcome back.';
   clearMonitoring();
+  document.dispatchEvent(new Event('colossus:locked'));
   $('engine-count').textContent = '—'; $('route-count').textContent = '—'; $('registry-state').textContent = 'Checking…';
   $('registry-detail').textContent = 'Checked with your account'; controls();
 }
@@ -49,6 +50,8 @@ function displayAccount(profile) {
   account = profile.user; accountVerified = true;
   $('greeting').textContent = account.name ? `Welcome back, ${account.name}.` : 'Welcome back.';
   $('account-email').textContent = account.email;
+  if ($('ops-account')) $('ops-account').textContent = account.name || account.email;
+  if ($('ops-avatar')) $('ops-avatar').textContent = (account.name || account.email || 'A').slice(0, 1).toUpperCase();
   $('account-role').textContent = `Astra ${account.role}`;
   $('account-permissions').textContent = account.role === 'admin'
     ? 'You can monitor usage and costs across all accounts, run engines, create and test versions, evaluate fixtures and manage shared user access.'
@@ -83,19 +86,23 @@ async function load() {
   $('capabilities').textContent = capabilities.routes.map(r => `${r.id}: ${r.capabilities.join(', ')}`).join(' · ') + ' · Streaming responses: SSE.';
   controls();
   void loadMonitoring();
+  document.dispatchEvent(new CustomEvent('colossus:ready', { detail: { user: account, capabilities } }));
 }
 async function checkAccount() {
   if (checkingAccount || authController.signal.aborted) return; checkingAccount = true;
+  const wasVerified = accountVerified;
   try {
     const profile = await api('/session'), previousRole = account?.role;
     if (authController.signal.aborted) return;
     displayAccount(profile);
     if (previousRole !== account.role) { $('user-rows').replaceChildren(); pendingChange = undefined; $('access-confirmation').hidden = true; await load(); }
     controls();
+    if (!wasVerified) document.dispatchEvent(new CustomEvent('colossus:ready', { detail: { user: account, capabilities: permissions } }));
   } catch (error) {
     if (!authController.signal.aborted) {
       accountVerified = false; $('user-rows').replaceChildren(); pendingChange = undefined; $('access-confirmation').hidden = true; controls();
       clearMonitoring();
+      document.dispatchEvent(new Event('colossus:locked'));
       $('status').textContent = 'Account access could not be verified. Actions are paused until the shared account service responds.';
     }
   } finally { checkingAccount = false; }
@@ -286,6 +293,7 @@ function renderMonitoring(data) {
   $('monitor-recent-note').textContent = `Showing ${data.processes.length} of ${total.processes} processes, newest first. Expand a process for model calls, rate snapshots and token details.`;
   $('monitor-rates').replaceChildren(...data.rates.map(item => textRow([`${item.route} / ${item.providerModel}`, item.rates ? money(item.rates.inputPerMillion) : 'Not configured', item.rates?.cachedInputPerMillion !== undefined ? money(item.rates.cachedInputPerMillion) : 'Not configured', item.rates ? money(item.rates.outputPerMillion) : 'Not configured'])));
   $('monitor-status').textContent = `Updated ${new Date(data.generatedAt).toLocaleTimeString()} · refreshes every 15 seconds while this page is visible.`;
+  document.dispatchEvent(new CustomEvent('colossus:usage', { detail: data }));
 }
 async function loadMonitoring() {
   if (!accountVerified || account?.role !== 'admin' || authController.signal.aborted) return;

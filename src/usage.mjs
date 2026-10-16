@@ -9,13 +9,14 @@ export function tokenUsage(raw) {
   const reported = count(raw?.total_tokens);
   const cached = count(raw?.prompt_cache_hit_tokens ?? raw?.prompt_tokens_details?.cached_tokens);
   const reasoning = count(raw?.completion_tokens_details?.reasoning_tokens);
+  const cacheWriteTokens = count(raw?.prompt_cache_creation_tokens);
   return { inputTokens, outputTokens, totalTokens: sum ?? reported,
     cachedInputTokens: inputTokens !== null && cached !== null && cached <= inputTokens ? cached : null,
     reasoningTokens: outputTokens !== null && reasoning !== null && reasoning <= outputTokens ? reasoning : null,
-    complete: sum !== null && (reported === null || reported === sum) };
+    cacheWriteTokens, complete: sum !== null && (reported === null || reported === sum) };
 }
 export function tokenCost(usage, rates) {
-  if (!rates || usage.inputTokens === null || usage.outputTokens === null) return { usd: null, complete: false };
+  if (!rates || usage.inputTokens === null || usage.outputTokens === null || usage.cacheWriteTokens > 0) return { usd: null, complete: false };
   let cached = usage.cachedInputTokens;
   if (cached === null && rates.cachedInputPerMillion === rates.inputPerMillion) cached = 0;
   if (cached === null || (cached > 0 && rates.cachedInputPerMillion === undefined)) return { usd: null, complete: false };
@@ -98,6 +99,7 @@ export class UsageMonitor {
   }
   async start(identity, requestId, operation) {
     const record = { schemaVersion: 1, requestId, operation,
+      systemId: identity.systemId || (identity.kind === 'account' ? 'shared' : 'legacy'), keyId: identity.keyId || null,
       actor: identity.kind === 'account' ? { kind: 'account', id: identity.id, email: identity.email } : { kind: 'service', id: identity.id, email: '' },
       startedAt: new Date(this.now()).toISOString(), completedAt: null, durationMs: 0, status: 'running', calls: [] };
     await this.save(record, 'started'); this.active.set(requestId, record); return record;

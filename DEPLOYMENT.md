@@ -13,11 +13,33 @@ The `production` environment permits only branch `main`. The federation provider
 - Runtime identity: `astra-colossus-runtime@astra-via.iam.gserviceaccount.com`
 - Artifact Registry: `me-west1-docker.pkg.dev/astra-via/astra-images/astra-colossus:<commit>`
 - Provider secret: `astra-provider-config:1`, reused from Workflow. Never stored in GitHub or the image.
+- Vault secret: `astra-colossus-vault:1`, dedicated to encrypting administrator-supplied connection credentials.
+- Operations database: Firestore Native `astra-colossus`, `me-west1`, with deletion protection.
 - Account backend: the existing shared Supabase project URL and publishable key, without its service-role credential.
 
-The deployment identity has Cloud Run Developer, writer on `astra-images`, and Service Account User on the Colossus runtime identity. The runtime identity has access to the existing provider secret and read/create access only on its private engine bucket.
+The deployment identity has Cloud Run Developer, writer on `astra-images`, and Service Account User on the Colossus runtime identity. The runtime identity has access to the existing provider secret, the dedicated vault secret, read/create access on its private engine bucket, and Datastore User scoped by an IAM condition to the dedicated `astra-colossus` database.
 
 Required repository variables: `GCP_PROJECT_ID`, `GCP_REGION`, `GCP_ARTIFACT_REPOSITORY`, `GCP_WORKLOAD_IDENTITY_PROVIDER`, `GCP_DEPLOY_SERVICE_ACCOUNT`, `GCP_RUNTIME_SERVICE_ACCOUNT`, `ASTRA_PROVIDER_SECRET_VERSION`, `COLOSSUS_ENGINE_BUCKET`, `SUPABASE_URL`, `SUPABASE_ANON_KEY`.
+
+The workflow defaults `COLOSSUS_CONTROL_DATABASE` to `astra-colossus` and `COLOSSUS_VAULT_SECRET_VERSION` to `1`. Set these optional repository variables when using a different database or vault version. `GOOGLE_CLOUD_PROJECT` supplies the project at runtime; local installations may set it explicitly.
+
+## Operations database and vault
+
+Before deploying the control plane, run the idempotent provisioning script with an authorized cloud administrator:
+
+```sh
+python3 scripts/provision-control-plane.py --project astra-via --region me-west1 --database astra-colossus --account YOUR_CLOUD_ACCOUNT
+```
+
+The script creates a dedicated Firestore Native database with deletion protection, grants the runtime identity `roles/datastore.user` with the condition `resource.name=="projects/astra-via/databases/astra-colossus"`, creates the dedicated vault secret if absent, and grants only the runtime identity access to that secret. It generates a random initial secret without printing or saving plaintext. Existing vault versions are left intact. The runtime uses metadata identity and native Firestore REST with conditional multi-document commits; no database password or client SDK is bundled. The browser has no direct Firestore access.
+
+Set `COLOSSUS_CONTROL_DATABASE` and `COLOSSUS_VAULT_SECRET` together. Production configuration refuses a missing/short dedicated vault secret when a database is enabled. Store the vault secret in Secret Manager, never in Git or browser storage. Keep it stable: rotating the secret without re-encrypting existing provider/integration records makes those credentials unreadable. Preserve the old secret version for recovery or re-enter each affected connection credential. It is independent of the existing browser-session encryption key.
+
+On first access, the gateway seeds missing environment model routes and seven system records. Existing records are never overwritten during startup. Database records become authoritative for enabled state, model routing, limits and prices. The initial provider keeps its managed environment credential; new provider credentials are encrypted before being written. Registry reads never return credential ciphertext/plaintext or system-key hashes. System-key plaintext is returned only by the issue response. Configuration/key operation attempts are recorded before writes and should be interpreted as requests, not proof of success.
+
+Firestore stores configuration, key hashes/grants, monthly wallets/reservations, process cancellation metadata and audit requests. Prompt/evidence/result payloads are excluded. Existing immutable usage history remains in private Cloud Storage. Database retention/backups are operational policies; no automatic cleanup or TTL is enabled by this release. Unknown usage retains spending reservations for investigation. Model-call limits and budget reservations use atomic conditional writes across instances. The console has eight separate management request slots per instance so a full inference queue still permits cancellation.
+
+The production database/vault have been provisioned. Other installations can omit the database for legacy environment-only inference; production control APIs then report setup required. Local development uses a labelled memory registry and must not be used as durable credential storage.
 
 ## Runtime and engine storage
 
@@ -35,7 +57,7 @@ The browser console and `GET /v1/monitoring` require a current, enabled Astra ad
 
 Usage history defaults to the existing private engine bucket under `usage/v1/`. No new database migration or IAM scope is needed with that bucket. A separate `COLOSSUS_USAGE_BUCKET` needs Object Viewer and Object Creator for the runtime identity. Production refuses inference if its start record cannot be stored. Completion-write failures preserve the paid result, emit a sanitized operational error and leave an incomplete start record. Immutable history is shared across instances, including restarts. The current lifecycle rule applies only to sessions, so usage retention requires a separate operational policy.
 
-Set the repository variable `COLOSSUS_PRICING_JSON` to verified USD-per-million input, cached-input and output prices keyed by configured model alias (see README). The workflow validates JSON and escapes its commas for the deployment action. Missing or empty configuration deploys `{}` and displays unavailable cost, never a zero-priced inference. Rate snapshots are saved per call; a later price update affects new calls only. For direct deployments, set the environment variable of the same name. The illustrative rates in `.env.example` are not production provider prices.
+Set the repository variable `COLOSSUS_PRICING_JSON` to verified USD-per-million input, cached-input and output prices keyed by configured model alias for initial bootstrap (see README). The workflow validates JSON and escapes its commas for the deployment action. After bootstrap, change prices in the Models editor: an environment change does not overwrite database records. Missing prices display unavailable cost. Rate snapshots are saved per call; a later price update affects new calls only. The illustrative rates in `.env.example` are not production provider prices.
 
 ## Custom domain
 
@@ -55,5 +77,7 @@ DNS, certificate activation and normal HTTPS must be verified after first provis
 The Personal Workspace integration uses `COLOSSUS_URL=https://colossus.astra-via.com` and `COLOSSUS_MODEL=astra-default`, plus the same existing server-side provider key. Its integration changes are maintained in the separate workspace repository. Lab and Evidence can use the documented Colossus HTTP API; their UI/release flows remain separate integrations.
 
 Rollback by deploying a previously checked Colossus image. Published engine versions are immutable: select an earlier version rather than modifying it. Removing the workspace gateway URL restores its previous direct provider connection. Routing backups should be kept outside Git before modifying the shared URL map or proxy.
+
+Rolling back to an image before the database control plane restores environment-only routing and ignores database grants/pauses/budgets. Do not treat that as an equivalent security policy. Preserve the database and vault when rolling back; do not delete or recreate them. Newly issued scoped system keys require a control-plane-capable image.
 
 References: [GitHub federation](https://docs.cloud.google.com/iam/docs/workload-identity-federation-with-deployment-pipelines), [Cloud Storage conditional inserts](https://docs.cloud.google.com/storage/docs/json_api/v1/objects/insert), [Cloud Run domains](https://docs.cloud.google.com/run/docs/mapping-custom-domains).
