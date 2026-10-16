@@ -49,3 +49,18 @@ test('media HTTP route authenticates before inference and exposes configured cap
  assert.equal((await fetch(url+'/v1/media/observe',{method:'POST',headers:{'Content-Type':'application/json',Origin:config.origin},body:JSON.stringify(sample())})).status,401);
  const r=await fetch(url+'/v1/capabilities',{headers:{Authorization:'Bearer synthetic-key'}});const d=await r.json();assert.equal(d.observer.status,'ready');assert.equal(JSON.stringify(d).includes('synthetic-key'),false);assert.equal(calls,0);
 });
+test('account media calls require the Enigma server credential as well as the protected analyst identity',async t=>{
+ const gatewayKey='synthetic-enigma-gateway-credential-00000001';let role='participant',providerCalls=0;
+ const config=configuration({ASTRA_PROVIDER_CONFIG_JSON:JSON.stringify({key:'synthetic-key',model:'test-model'}),SUPABASE_URL:'https://accounts.example.invalid',SUPABASE_ANON_KEY:'synthetic-public',COLOSSUS_MEDIA_PROJECT:'astra-via',COLOSSUS_MEDIA_MODEL:'gemini-3.1-flash-lite',COLOSSUS_MEDIA_INGEST_KEY:gatewayKey});
+ const service=createService(config,{logger:()=>{},fetcher:async url=>{
+  if(String(url).includes('/auth/v1/user'))return Response.json({id:'11111111-1111-4111-8111-111111111111',app_metadata:{role}});
+  if(String(url).startsWith('http://metadata.'))return Response.json({access_token:'synthetic-runtime',expires_in:3600});
+  providerCalls++;return Response.json({totalTokens:6001});
+ }});
+ await new Promise(r=>service.server.listen(0,'127.0.0.1',r));t.after(()=>{service.server.closeAllConnections();service.server.close();});
+ const base='http://127.0.0.1:'+service.server.address().port;
+ const call=key=>fetch(base+'/v1/media/observe',{method:'POST',headers:{Authorization:'Bearer synthetic-user-session','Content-Type':'application/json',...(key?{'X-Enigma-Media-Key':key}:{})},body:JSON.stringify(sample())});
+ assert.equal((await call()).status,403);assert.equal((await call('wrong-key')).status,403);assert.equal(providerCalls,0);
+ const valid=await call(gatewayKey);assert.equal(valid.status,200);assert.equal((await valid.json()).usage.total_tokens,0);assert.equal(providerCalls,1);
+ role='viewer';assert.equal((await call(gatewayKey)).status,403);assert.equal(providerCalls,1);
+});

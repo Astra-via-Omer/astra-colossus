@@ -227,7 +227,10 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
       if (Object.hasOwn(inferenceOperations, url.pathname)) {
         operation = inferenceOperations[url.pathname];
         if (['test_engine', 'evaluate'].includes(operation) && !identity.admin) fail(403, 'admin_required', 'Only admins can test or evaluate engines.');
-        if (operation==='observe_media' && identity.kind==='account' && !['admin','participant'].includes(identity.role)) fail(403,'analyst_required','Audio/video observation requires an analyst account.');
+        if (operation==='observe_media' && identity.kind==='account') {
+          if(!['admin','participant'].includes(identity.role)) fail(403,'analyst_required','Audio/video observation requires an analyst account.');
+          if(!equalSecret(req.headers['x-enigma-media-key'],config.mediaIngestKey)) fail(403,'media_gateway_required','Account media analysis must come through the authorized Enigma gateway.');
+        }
         process = await monitoring.start(identity, requestId, operation);
       }
       if (url.pathname === '/v1/media/observe') {

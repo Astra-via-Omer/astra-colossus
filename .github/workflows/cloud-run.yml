@@ -111,3 +111,5 @@ jobs:
           env_vars_update_strategy: merge
           secrets: |
             ASTRA_PROVIDER_CONFIG_JSON=astra-provider-config:${{ vars.ASTRA_PROVIDER_SECRET_VERSION }}
+            COLOSSUS_MEDIA_INGEST_KEY=astra-enigma-media-ingest:1
+          secrets_update_strategy: merge
