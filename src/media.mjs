@@ -84,15 +84,19 @@ export class MediaObserver {
     const parts = [{ text: `Current sample: ${input.durationMs} ms. Previous speech (context only): ${JSON.stringify(input.previousTranscript)}. Other selected channels, recognized observations only: ${JSON.stringify(input.otherChannels)}. Compare the current sample with these other channels only when their exact speech or screen text supports a relationship. Return at most four links with exact quotes from both sides and an explanation. Similar reporting is not independent corroboration. Do not invent a relationship for unrelated coverage. Empty links are valid. The relationships are provisional, never evidence of truth.` }, { inlineData: input.audio }];
     for (const frame of input.frames) parts.push({ text: `Sampled video frame at ${frame.offsetMs} ms:` }, { inlineData: { data: frame.data, mimeType: frame.mimeType } });
     const started = Date.now();
+    const noInference = error => ({engine:'broadcast-observation@1.0.0',model,providerMs:Date.now()-started,observation:null,error,usage:{prompt_tokens:0,completion_tokens:0,total_tokens:0,prompt_tokens_details:{cached_tokens:0},modalities:[],complete:true}});
     const endpoint = `https://${host}/v1/projects/${project}/locations/${location}/publishers/google/models/${model}`;
     const request = { systemInstruction: { parts: [{ text: instruction }] }, contents: [{ role: 'user', parts }], generationConfig: { maxOutputTokens: 1400, temperature: 0.1, thinkingConfig: { thinkingLevel: 'MINIMAL' }, responseMimeType: 'application/json', responseSchema: schema } };
-    const headers = { Authorization: `Bearer ${await this.auth()}`, 'Content-Type': 'application/json' };
+    let headers,count;
     // Bound the token budget before inference. Do not send an oversized media
     // prompt and discover the allowance overrun after a billable completion.
-    const countResponse = await this.fetch(endpoint + ':countTokens', { method: 'POST', redirect: 'error', signal, headers, body: JSON.stringify({ ...request, model: `projects/${project}/locations/${location}/publishers/google/models/${model}` }) });
-    if (!countResponse.ok) { await countResponse.body?.cancel(); fail(502, 'media_preflight', 'The media token budget could not be checked.'); }
-    const count = await countResponse.json();
-    if (!Number.isSafeInteger(count.totalTokens) || count.totalTokens < 0 || count.totalTokens > 4600) fail(413, 'media_token_limit', 'The sample exceeds its 6,000-token inference budget.');
+    try {
+      headers = { Authorization: `Bearer ${await this.auth()}`, 'Content-Type': 'application/json' };
+      const countResponse = await this.fetch(endpoint + ':countTokens', { method: 'POST', redirect: 'error', signal, headers, body: JSON.stringify({ ...request, model: `projects/${project}/locations/${location}/publishers/google/models/${model}` }) });
+      if (!countResponse.ok) { await countResponse.body?.cancel(); return noInference('The media token budget could not be checked; inference did not start.'); }
+      count = await countResponse.json();
+    } catch {return noInference('The media provider preflight failed; inference did not start.');}
+    if (!Number.isSafeInteger(count.totalTokens) || count.totalTokens < 0 || count.totalTokens > 4600) return noInference('The sample exceeds its 6,000-token inference budget; inference did not start.');
     onInference?.();
     const response = await this.fetch(endpoint + ':generateContent', {
       method: 'POST', redirect: 'error', signal,

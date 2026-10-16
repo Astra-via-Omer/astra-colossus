@@ -37,7 +37,7 @@ test('over-budget inputs stop before generation; rejected model content retains 
  let generated=0;
  const mock=(tokens,good=false)=>async(url)=>String(url).startsWith('http://metadata.')?Response.json({access_token:'test',expires_in:3600}):String(url).endsWith(':countTokens')?Response.json({totalTokens:tokens}):(generated++,Response.json({candidates:[{finishReason:'STOP',content:{parts:[{text:JSON.stringify({...observation,claims:[{...observation.claims[0],quote:'invented'}]})}]}}],usageMetadata:{promptTokenCount:10,candidatesTokenCount:5,totalTokenCount:15}}));
  const c={project:'astra-via',location:'global',model:'gemini-3.1-flash-lite'};
- await assert.rejects(()=>new MediaObserver(c,mock(6001)).observe(sample(),new AbortController().signal),/budget/);assert.equal(generated,0);
+ const rejected=await new MediaObserver(c,mock(6001)).observe(sample(),new AbortController().signal);assert.equal(rejected.observation,null);assert.equal(rejected.usage.total_tokens,0);assert.equal(rejected.usage.complete,true);assert.equal(generated,0);
  const result=await new MediaObserver(c,mock(500)).observe(sample(),new AbortController().signal);assert.equal(result.observation,null);assert.equal(result.usage.total_tokens,15);
  assert.equal(mediaUsage({promptTokenCount:10,totalTokenCount:15}).complete,false);
 });
