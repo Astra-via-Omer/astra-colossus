@@ -137,7 +137,9 @@
     byId('ops-integration-cards').replaceChildren(...catalog.integrations.map(integration => connectionCard(integration, 'integrations')));
     if (!catalog.integrations.length) byId('ops-integration-cards').append(empty('Register your first data API, bucket location or training controller.'));
   }
-  function renderAll() { renderOverview(); renderModels(); renderProviders(); renderSystems(); renderKeys(); renderProcesses(); renderIntegrations(); }
+  function renderAll() { renderOverview(); renderModels(); renderProviders(); renderSystems(); renderKeys(); renderProcesses(); renderIntegrations();
+    if (catalog) document.dispatchEvent(new CustomEvent('colossus:catalog', { detail: catalog.models.filter(model => model.enabled && catalog.providers.some(provider => provider.id === model.providerId && provider.enabled && (provider.credentialConfigured || provider.allowAnonymous))) }));
+  }
   async function refresh() {
     if (!verified || refreshInFlight) return; refreshInFlight = true; byId('ops-refresh').disabled = true;
     try { const [registry, activity] = await Promise.all([api('/v1/control'), api('/v1/monitoring?days=1')]); if (!verified) return; catalog = registry; usage = activity; byId('ops-storage').textContent = registry.storage === 'firestore' ? 'Database connected' : 'Local preview · volatile'; byId('ops-environment').lastChild.textContent = registry.storage === 'firestore' ? 'PRODUCTION GATEWAY' : 'LOCAL PREVIEW'; byId('ops-api-example').textContent = byId('ops-api-example').textContent.replace('https://colossus.astra-via.com', registry.gateway.origin); renderAll(); }

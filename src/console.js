@@ -69,13 +69,20 @@ async function task(action) {
   try { await action(); if (account) $('status').textContent = 'Complete.'; } catch (error) { if (account && !authController.signal.aborted) $('status').textContent = error.message; }
   finally { busy = false; controls(); void loadMonitoring(); }
 }
+function setEngineModels(routes) {
+  const selected = $('model').value;
+  const chat = routes.filter(route => !route.task || route.task === 'chat');
+  $('model').replaceChildren(...chat.map(route => new Option(`${route.id} · ${route.model}`, route.id)));
+  if (chat.some(route => route.id === selected)) $('model').value = selected;
+}
+document.addEventListener('colossus:catalog', event => { if (accountVerified) setEngineModels(event.detail); });
 async function load() {
   const [profile, capabilities] = await Promise.all([api('/session'), api('/v1/capabilities')]);
   permissions = capabilities;
   const data = await api('/v1/engines'); engines = data.engines;
   if (authController.signal.aborted) return;
   $('engine').replaceChildren(...engines.map((e, i) => new Option(`${e.name} · ${e.version}`, String(i))));
-  $('model').replaceChildren(...capabilities.routes.map(r => new Option(`${r.id} · ${r.model}`, r.id)));
+  setEngineModels(capabilities.routes);
   displayAccount(profile);
   $('engine-count').textContent = String(engines.length);
   $('route-count').textContent = String(capabilities.routes.length);
@@ -254,7 +261,7 @@ function textRow(values) {
   for (const value of values) { const cell = document.createElement('td'); cell.textContent = value; row.append(cell); }
   return row;
 }
-const operationNames = { run_engine: 'Engine run', test_engine: 'Draft test', evaluate: 'Evaluation', chat: 'Chat inference' };
+const operationNames = { run_engine: 'Engine run', test_engine: 'Draft test', evaluate: 'Evaluation', chat: 'Chat inference', embedding: 'Embedding', observe_media: 'Broadcast observation' };
 function renderMonitoring(data) {
   const total = data.totals, selectedUser = $('monitor-user').value;
   $('monitor-user').replaceChildren(new Option('All accounts & services', ''), ...data.users.map(user => new Option(user.email || user.id, user.id)));
