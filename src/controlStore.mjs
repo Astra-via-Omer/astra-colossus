@@ -25,6 +25,14 @@ export class ControlStore {
     try { return { data: JSON.parse(value.fields.json.stringValue), version: value.updateTime }; }
     catch { fail(503, 'control_invalid', 'An operations record could not be read.'); }
   }
+  async organizations() {
+    if (!this.shared) return [...this.memory.entries()].filter(([path]) => path.startsWith('workspaceOrganizations/') && path.split('/').length === 2)
+      .map(([path, { data }]) => ({ id: path.split('/')[1], name: data.name || path.split('/')[1], status: data.status || 'unknown' }));
+    const root = `projects/${this.config.controlProject}/databases/${this.config.workspaceDatabase}/documents`;
+    const result = await this.request(`${root}/workspaceOrganizations?pageSize=500&orderBy=__name__`);
+    if (result?.nextPageToken) fail(503, 'organization_limit', 'The organization directory exceeds its page limit.');
+    return (result?.documents || []).map(doc => ({ id: doc.name.split('/').at(-1), name: doc.fields?.name?.stringValue || doc.name.split('/').at(-1), status: doc.fields?.status?.stringValue || 'unknown' }));
+  }
   // Membership is owned by Workspace. Read its live records; never accept an org from a caller.
   async organizationFor(userId) {
     if (!/^[a-zA-Z0-9_-]{1,120}$/.test(userId)) fail(403, 'organization_denied', 'A verified account is required.');

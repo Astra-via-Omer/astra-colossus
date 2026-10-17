@@ -67,6 +67,17 @@ test('public welcome and private application require an opaque account cookie; m
   assert(!JSON.stringify(app.logs).includes('synthetic-account-token')); assert(!JSON.stringify(app.logs).includes('synthetic-password'));
 });
 
+test('group organization choices remain browser-admin only and do not change memberships', async t => {
+  const app = await start(t);
+  await app.control.store.mutate(['workspaceOrganizations/acme'], () => [{ id: 'acme', name: 'Acme Research', status: 'active', sealed: 'must-not-leak' }]);
+  assert.equal((await app.call('/v1/control/organizations')).status, 401);
+  assert.equal((await app.call('/v1/control/organizations', undefined, 'GET', undefined, { Authorization: 'Bearer synthetic-machine-key' })).status, 401);
+  const { cookie } = await app.login();
+  const response = await app.call('/v1/control/organizations', cookie);
+  assert.equal(response.status, 200); assert.deepEqual(await response.json(), { organizations: [{ id: 'acme', name: 'Acme Research', status: 'active' }] });
+  app.state.user.app_metadata.role = 'viewer'; assert.equal((await app.call('/v1/control/organizations', cookie)).status, 403);
+});
+
 test('personal display API requires the current admin cookie and same-origin writes, and saves only its own account field', async t => {
   const app = await start(t), choice = { version: 1, font: 'verdana', textSize: 22, textWeight: 'bold', spacing: 'roomy', contrast: 'high', motion: 'reduced' };
   assert.equal((await app.call('/v1/preferences')).status, 401);

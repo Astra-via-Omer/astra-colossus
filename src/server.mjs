@@ -173,7 +173,7 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
     try {
       const url = new URL(req.url, config.origin), method = req.method;
       if (method === 'GET' && url.pathname === '/healthz') { operation = 'health'; return json(res, { service: 'colossus', status: draining ? 'draining' : 'ready' }, draining ? 503 : 200); }
-      const assets = { '/': ['welcome.html', 'text/html'], '/welcome.js': ['welcome.js', 'text/javascript'], '/console.js': ['console.js', 'text/javascript'], '/console.css': ['console.css', 'text/css'], '/operations.js': ['operations.js', 'text/javascript'], '/operations.css': ['operations.css', 'text/css'], '/theme.js': ['theme.js', 'text/javascript'], '/astra-logo.svg': ['astra-logo.svg', 'image/svg+xml'], '/astra-logo-light.svg': ['astra-logo-light.svg', 'image/svg+xml'], '/astra-icon.svg': ['astra-icon.svg', 'image/svg+xml'] };
+      const assets = { '/': ['welcome.html', 'text/html'], '/welcome.js': ['welcome.js', 'text/javascript'], '/console.js': ['console.js', 'text/javascript'], '/console.css': ['console.css', 'text/css'], '/operations.js': ['operations.js', 'text/javascript'], '/group-editor.js': ['group-editor.js', 'text/javascript'], '/operations.css': ['operations.css', 'text/css'], '/theme.js': ['theme.js', 'text/javascript'], '/astra-logo.svg': ['astra-logo.svg', 'image/svg+xml'], '/astra-logo-light.svg': ['astra-logo-light.svg', 'image/svg+xml'], '/astra-icon.svg': ['astra-icon.svg', 'image/svg+xml'] };
       Object.assign(assets, { '/astra-display.js': ['astra-display.js', 'text/javascript'], '/display-contract.mjs': ['display-contract.mjs', 'text/javascript'], '/astra-display.css': ['astra-display.css', 'text/css'] });
       const asset = Object.hasOwn(assets, url.pathname) ? assets[url.pathname] : undefined;
       if (method === 'GET' && asset) { operation = 'console'; res.writeHead(200, { 'Content-Type': `${asset[1]}; charset=utf-8` }); return res.end(await readFile(new URL(asset[0], import.meta.url))); }
@@ -242,6 +242,7 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
       if (url.pathname === '/v1/control' || url.pathname.startsWith('/v1/control/')) {
         operation = 'control_plane'; const actor = await browserIdentity(req);
         if (method === 'GET' && url.pathname === '/v1/control') return json(res, await control.snapshot());
+        if (method === 'GET' && url.pathname === '/v1/control/organizations') return json(res, { organizations: await control.store.organizations() });
         if (!['POST', 'PATCH'].includes(method)) fail(405, 'method_not_allowed', 'Use the supported operations control method.');
         if (!(req.headers['content-type'] || '').startsWith('application/json')) fail(415, 'content_type', 'Use application/json.');
         const body = await boundedJson(req, 32768);

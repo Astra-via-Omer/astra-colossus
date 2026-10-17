@@ -1,7 +1,8 @@
 (() => {
   const byId = id => document.getElementById(id);
   let catalog, usage, verified = false, refreshInFlight = false, editor, confirmation, selectedView = 'overview';
-  const discovered = new Map();
+  const discovered = new Map(), peopleDirectory = new Map();
+  let groupUsers, groupOrganizations, groupSearchTimer, groupSearchVersion = 0;
   const titles = { overview: 'Overview', models: 'Models', groups: 'User groups', providers: 'Providers', systems: 'Astra systems', keys: 'API access', processes: 'Processes', analytics: 'Costs & usage', integrations: 'Integrations', engines: 'Engine studio', access: 'Users & access', guide: 'Documentation' };
   const aliases = { monitoring: 'analytics', 'user-access': 'access', guide: 'guide', room: 'engines' };
   const names = { chat: 'Chat inference', embedding: 'Embedding', run_engine: 'Engine run', test_engine: 'Draft test', evaluate: 'Evaluation', observe_media: 'Broadcast observation' };
@@ -82,11 +83,31 @@
   }
   function renderGroups() {
     if (!catalog) return;
-    const rows = (catalog.groups || []).map(group => {
-      const row = node('tr');
-      row.append(cell(identityCell(group.name, group.id)), cell(group.memberIds.join(', ') || 'No accounts assigned'), cell(group.modelIds.join(' → ')), cell(group.organizationId || 'Personal accounts'), cell(statusBadge(group.enabled ? 'enabled' : 'paused')), actionCell([['Configure', () => openEditor('groups', group)], [group.enabled ? 'Pause' : 'Enable', () => toggle('groups', group)]])); return row;
+    const query = byId('groups-search').value.toLowerCase(), groups = catalog.groups || [], ui = window.ColossusGroups;
+    const cards = groups.filter(group => `${group.name} ${group.memberIds.map(id => peopleDirectory.get(id)?.email || '').join(' ')}`.toLowerCase().includes(query)).map(group => {
+      const card = node('article', 'group-card'), heading = node('div', 'group-card-heading'), title = node('div');
+      const organization = groupOrganizations?.organizations.find(value => value.id === group.organizationId);
+      title.append(node('h2', '', group.name), node('small', '', group.organizationId ? organization?.name || group.organizationId : 'Any organization or personal account')); heading.append(title, statusBadge(group.enabled ? 'enabled' : 'paused')); card.append(heading);
+      const people = node('div', 'group-card-people'); people.append(node('strong', '', group.memberIds.length + (group.memberIds.length === 1 ? ' person' : ' people')));
+      const known = group.memberIds.map(id => peopleDirectory.get(id)?.email).filter(Boolean);
+      const remaining = group.memberIds.length - Math.min(known.length, 3); people.append(node('p', '', known.length ? known.slice(0, 3).join(', ') + (remaining ? ' +' + remaining + ' more' : '') : group.memberIds.length ? 'Open the group to view its people.' : 'Add people to start using this group.')); card.append(people);
+      const defaultId = ui.defaultModel(group, catalog), base = node('div', 'group-card-default'); base.append(node('small', '', 'DEFAULT TEXT MODEL'), node('strong', '', defaultId ? ui.modelLabel(defaultId, catalog) : 'No text model')); card.append(base);
+      const products = node('dl', 'group-card-products');
+      for (const [system, activity] of [['Workflow', 'workflow.analysis'], ['Enigma', 'enigma.analysis'], ['Evidence', 'evidence.review']]) { const id = ui.effectiveModel(group, activity, catalog); products.append(node('dt', '', system), node('dd', '', id ? ui.modelLabel(id, catalog) : 'No text model')); }
+      const rules = Object.keys(group.activityModels || {}).length; card.append(products, node('p', 'group-help', rules ? rules + (rules === 1 ? ' product activity rule' : ' product activity rules') : 'All products follow the group default'));
+      if (group.modelIds.includes('broadcast-media')) card.append(badge('Enigma broadcast media enabled', 'good'));
+      const actions = node('div', 'actions'); actions.append(button('Edit group', () => openEditor('groups', group), 'secondary'), button(group.enabled ? 'Pause group' : 'Enable group', () => toggle('groups', group), 'secondary')); card.append(actions); return card;
     });
-    byId('ops-group-rows').replaceChildren(...rows); emptyRow(byId('ops-group-rows'), 6, 'Create a group, assign account IDs and choose its models.');
+    byId('ops-group-rows').replaceChildren(...cards);
+    if (!cards.length) byId('ops-group-rows').append(empty(query ? 'No matching groups. Try another name or email.' : 'Create a group, select its people, and choose a model.'));
+    const members = groups.reduce((total, group) => total + group.memberIds.length, 0); byId('groups-summary').textContent = `${groups.length} ${groups.length === 1 ? 'group' : 'groups'} · ${members} ${members === 1 ? 'person' : 'people'} assigned`;
+  }
+  function searchGroups() {
+    renderGroups(); clearTimeout(groupSearchTimer); const version = ++groupSearchVersion, query = byId('groups-search').value.trim();
+    if (query) groupSearchTimer = setTimeout(async () => {
+      try { const result = await api('/v1/access/users?search=' + encodeURIComponent(query) + '&offset=0'); if (!verified || version !== groupSearchVersion) return; for (const user of result.users) peopleDirectory.set(user.id, user); renderGroups(); }
+      catch { if (verified && version === groupSearchVersion && selectedView === 'groups') notice('People search is unavailable. You can still search by group name.', true); }
+    }, 250);
   }
   function renderModels() {
     if (!catalog) return;
@@ -150,7 +171,7 @@
   }
   async function refresh() {
     if (!verified || refreshInFlight) return; refreshInFlight = true; byId('ops-refresh').disabled = true;
-    try { const [registry, activity] = await Promise.all([api('/v1/control'), api('/v1/monitoring?days=1')]); if (!verified) return; catalog = registry; usage = activity; byId('ops-storage').textContent = registry.storage === 'firestore' ? 'Database connected' : 'Local preview · volatile'; byId('ops-environment').lastChild.textContent = registry.storage === 'firestore' ? 'PRODUCTION GATEWAY' : 'LOCAL PREVIEW'; byId('ops-api-example').textContent = byId('ops-api-example').textContent.replace('https://colossus.astra-via.com', registry.gateway.origin); renderAll(); }
+    try { const [registry, activity, users, organizations] = await Promise.all([api('/v1/control'), api('/v1/monitoring?days=1'), api('/v1/access/users?search=&offset=0').catch(() => null), api('/v1/control/organizations').catch(() => null)]); if (!verified) return; catalog = registry; usage = activity; groupUsers = users; groupOrganizations = organizations; for (const user of users?.users || []) peopleDirectory.set(user.id, user); byId('ops-storage').textContent = registry.storage === 'firestore' ? 'Database connected' : 'Local preview · volatile'; byId('ops-environment').lastChild.textContent = registry.storage === 'firestore' ? 'PRODUCTION GATEWAY' : 'LOCAL PREVIEW'; byId('ops-api-example').textContent = byId('ops-api-example').textContent.replace('https://colossus.astra-via.com', registry.gateway.origin); renderAll(); }
     catch (error) { if (verified) notice(error.message, true); }
     finally { refreshInFlight = false; byId('ops-refresh').disabled = false; }
   }
@@ -187,7 +208,13 @@
   const presets = { openai: ['OpenAI', 'https://api.openai.com/v1'], anthropic: ['Anthropic', 'https://api.anthropic.com/v1'], deepseek: ['DeepSeek', 'https://api.deepseek.com'], gpu: ['GPU model endpoint', 'https://your-serving-endpoint.example/v1'], compatible: ['Compatible provider', 'https://your-provider.example/v1'] };
   function openEditor(collection, record, preset) {
     if (!catalog || !verified) { notice('Wait for the operations registry to load.', true); return; }
-    editor = { collection, record, preset }; byId('ops-editor-fields').replaceChildren(); byId('ops-editor-error').textContent = ''; byId('ops-editor-save').disabled = false;
+    editor?.groupForm?.dispose();
+    editor = { collection, record, preset }; byId('ops-editor').classList.toggle('group-dialog', collection === 'groups'); byId('ops-editor-fields').replaceChildren(); byId('ops-editor-error').textContent = ''; byId('ops-editor-save').disabled = false;
+    if (collection === 'groups') {
+      byId('ops-editor-title').textContent = record ? 'Edit group' : 'Create a group'; byId('ops-editor-kicker').textContent = 'PEOPLE & MODEL SETTINGS';
+      editor.groupForm = window.ColossusGroups.createEditor({ root: byId('ops-editor-fields'), catalog, record, users: groupUsers, organizations: groupOrganizations, api, onUsers: users => { for (const user of users) peopleDirectory.set(user.id, user); renderGroups(); } });
+      byId('ops-editor-save').textContent = 'Save group'; byId('ops-editor-note').textContent = 'Product approvals and key access still apply.'; byId('ops-editor').showModal(); return;
+    }
     byId('ops-editor-title').textContent = collection === 'keys' ? 'Issue a system key' : `${record ? 'Configure' : 'Register'} ${({ providers: 'provider connection', models: 'model route', systems: 'Astra system', integrations: 'integration', jobs: 'external job', groups: 'user group' })[collection]}`;
     byId('ops-editor-kicker').textContent = record ? 'CONTROL PLANE / EDIT' : 'CONTROL PLANE / NEW CONNECTION';
     const providerKind = typeof preset === 'string' ? preset : record?.kind || 'openai';
@@ -217,12 +244,6 @@
       field('outputRate', 'Output · USD / 1M tokens', record?.pricing?.outputPerMillion, { type: 'number', min: 0, max: 1000000 });
       field('cachedRate', 'Cached input · USD / 1M tokens', record?.pricing?.cachedInputPerMillion, { type: 'number', min: 0, max: 1000000, wide: true, note: 'Use your provider’s verified rates. Leave all prices blank to keep cost unavailable.' });
       byId('ops-editor-note').textContent = 'The alias remains stable for calling applications.';
-    } else if (collection === 'groups') {
-      const members = field('memberIds', 'Account IDs · one per line', (record?.memberIds || []).join('\n'), { wide: true, textarea: true, note: 'Copy verified account IDs from Users & access. Each account belongs to one group.' }); members.maxLength = 12500;
-      const models = field('modelIds', 'Model aliases · one per line, in selection order', (record?.modelIds || []).join('\n'), { wide: true, textarea: true, required: true, note: 'Colossus chooses the first enabled, compatible route also granted by the calling system key.' }); models.maxLength = 12500;
-      field('organizationId', 'Approved Workspace organization ID (optional)', record?.organizationId || '', { wide: true });
-      const activity = field('activityModels', 'Optional activity assignments · JSON object', JSON.stringify(record?.activityModels || {}, null, 2), { wide: true, textarea: true, note: 'Example: {"workflow.analysis":"astra-default"}. Values must belong to this group.' }); activity.maxLength = 12000;
-      byId('ops-editor-note').textContent = 'Calling applications cannot override group selection. Pause blocks new inference; removing an account removes its assignment.';
     } else if (collection === 'systems') {
       field('url', 'System URL (optional)', record?.url || '', { wide: true, placeholder: 'https://your-system.astra-via.com' });
       field('monthlyBudgetUsd', 'Monthly spending cap · USD', record?.monthlyBudgetUsd, { type: 'number', min: 0, max: 10000000, placeholder: 'Unlimited' });
@@ -257,13 +278,13 @@
     slug?.addEventListener('input', () => { slug.dataset.edited = 'true'; });
     byId('ops-editor-save').textContent = collection === 'keys' ? 'Issue system key' : 'Save configuration'; byId('ops-editor').showModal();
   }
-  function closeEditor() { byId('ops-editor').close(); byId('ops-editor-form').reset(); byId('ops-editor-fields').replaceChildren(); editor = null; }
+  function closeEditor() { editor?.groupForm?.dispose(); byId('ops-editor').close(); byId('ops-editor-form').reset(); byId('ops-editor-fields').replaceChildren(); editor = null; }
   byId('ops-editor-close').addEventListener('click', closeEditor); byId('ops-editor-cancel').addEventListener('click', closeEditor);
-  byId('ops-editor').addEventListener('cancel', () => { byId('ops-editor-fields').replaceChildren(); editor = null; });
+  byId('ops-editor').addEventListener('cancel', () => { editor?.groupForm?.dispose(); byId('ops-editor-fields').replaceChildren(); editor = null; });
   byId('ops-editor-form').addEventListener('submit', async event => {
     event.preventDefault(); if (!editor || !verified) return;
     const data = new FormData(event.currentTarget), values = Object.fromEntries(data), collection = editor.collection;
-    const body = { ...values, ...(editor.record ? { id: editor.record.id, expectedUpdatedAt: editor.record.updatedAt } : {}) };
+    let body = { ...values, ...(editor.record ? { id: editor.record.id, expectedUpdatedAt: editor.record.updatedAt } : {}) };
     byId('ops-editor-save').disabled = true; byId('ops-editor-error').textContent = '';
     try {
       if (collection === 'providers' && !editor.record?.native) { body.allowAnonymous = data.getAll('anonymous').includes('allow'); delete body.anonymous; if (!body.apiKey) delete body.apiKey; }
@@ -276,14 +297,14 @@
       }
       if (collection === 'systems') { body.monthlyBudgetUsd = body.monthlyBudgetUsd === '' ? null : Number(body.monthlyBudgetUsd); body.requestsPerMinute = Number(body.requestsPerMinute); }
       if (collection === 'keys') { body.allowedModels = data.getAll('allowedModels'); body.expiresInDays = Number(body.expiresInDays); body.requireGroup = data.getAll('groupPolicy').includes('required'); delete body.groupPolicy; body.registrationProviderIds = data.getAll('registrationProviderIds'); body.organizationIds = String(body.organizationIds || '').split(/\s+/).filter(Boolean); }
-      if (collection === 'groups') { for (const key of ['memberIds', 'modelIds']) body[key] = String(body[key] || '').split(/\s+/).filter(Boolean); body.organizationId = body.organizationId || null; body.activityModels = JSON.parse(body.activityModels || '{}'); }
+      if (collection === 'groups') body = { ...editor.groupForm.value(), ...(editor.record ? { expectedUpdatedAt: editor.record.updatedAt } : {}) };
       if (collection === 'jobs') body.reportedCostUsd = body.reportedCostUsd === '' ? null : Number(body.reportedCostUsd);
       if (collection === 'integrations' && !body.apiKey) delete body.apiKey;
       const result = await api('/v1/control/' + collection, body, editor.record ? 'PATCH' : 'POST');
       closeEditor();
       if (result.oneTimeKey) { byId('ops-created-key').value = result.oneTimeKey; byId('ops-created-key').type = 'password'; byId('ops-key-feedback').textContent = ''; byId('ops-show-key').textContent = 'Show key'; byId('ops-key-result').showModal(); }
       notice(collection === 'keys' ? 'System key issued with explicit model grants.' : 'Configuration saved. New requests use the updated registry.'); await refresh();
-    } catch (error) { byId('ops-editor-error').textContent = error.message; }
+    } catch (error) { byId('ops-editor-error').textContent = collection === 'groups' && error.code === 'control_conflict' ? 'This group changed in another session. Close and reopen it before saving.' : collection === 'groups' && error.code === 'group_conflict' ? 'Someone is already in another group. Close and reopen this group to refresh the people list.' : error.message; }
     finally { byId('ops-editor-save').disabled = false; }
   });
   function clearKey() { byId('ops-created-key').value = ''; byId('ops-key-feedback').textContent = ''; }
@@ -311,10 +332,10 @@
   document.querySelectorAll('[data-create]').forEach(control => control.addEventListener('click', () => openEditor(control.dataset.create)));
   document.querySelectorAll('[data-provider-preset]').forEach(control => control.addEventListener('click', () => openEditor('providers', null, control.dataset.providerPreset)));
   byId('ops-refresh').addEventListener('click', refresh); byId('process-refresh').addEventListener('click', refresh);
-  byId('models-search').addEventListener('input', renderModels); byId('process-search').addEventListener('input', renderProcesses); byId('process-state').addEventListener('change', renderProcesses);
+  byId('groups-search').addEventListener('input', searchGroups); byId('models-search').addEventListener('input', renderModels); byId('process-search').addEventListener('input', renderProcesses); byId('process-state').addEventListener('change', renderProcesses);
   document.addEventListener('colossus:ready', () => { verified = true; void refresh(); });
   document.addEventListener('colossus:usage', event => { if (event.detail.days === 1 && !event.detail.userId) { usage = event.detail; renderOverview(); renderModels(); renderProcesses(); } });
-  document.addEventListener('colossus:locked', () => { verified = false; catalog = undefined; usage = undefined; discovered.clear(); clearKey(); byId('ops-editor-fields').replaceChildren(); byId('ops-process-detail-body').replaceChildren(); editor = null; confirmation = null; for (const id of ['overview-models', 'overview-calls', 'overview-tokens', 'overview-cost']) byId(id).textContent = '—'; for (const dialog of document.querySelectorAll('.ops-dialog[open]')) dialog.close(); for (const id of ['ops-model-rows', 'ops-group-rows', 'ops-key-rows', 'ops-process-rows', 'ops-provider-cards', 'ops-system-cards', 'ops-integration-cards', 'ops-external-jobs', 'overview-audit', 'overview-processes', 'overview-providers', 'ecosystem-nodes']) byId(id).replaceChildren(); byId('ops-account').textContent = 'Access verification required'; byId('ops-storage').textContent = 'Actions paused'; });
+  document.addEventListener('colossus:locked', () => { verified = false; groupSearchVersion++; clearTimeout(groupSearchTimer); editor?.groupForm?.dispose(); catalog = undefined; usage = undefined; groupUsers = undefined; groupOrganizations = undefined; peopleDirectory.clear(); discovered.clear(); clearKey(); byId('ops-editor-fields').replaceChildren(); byId('ops-process-detail-body').replaceChildren(); editor = null; confirmation = null; for (const id of ['overview-models', 'overview-calls', 'overview-tokens', 'overview-cost']) byId(id).textContent = '—'; for (const dialog of document.querySelectorAll('.ops-dialog[open]')) dialog.close(); for (const id of ['ops-model-rows', 'ops-group-rows', 'ops-key-rows', 'ops-process-rows', 'ops-provider-cards', 'ops-system-cards', 'ops-integration-cards', 'ops-external-jobs', 'overview-audit', 'overview-processes', 'overview-providers', 'ecosystem-nodes']) byId(id).replaceChildren(); byId('ops-account').textContent = 'Access verification required'; byId('ops-storage').textContent = 'Actions paused'; });
   const timer = setInterval(() => { if (document.visibilityState === 'visible') void refresh(); }, 30000);
-  window.addEventListener('pagehide', () => { clearInterval(timer); clearKey(); });
+  window.addEventListener('pagehide', () => { clearInterval(timer); clearTimeout(groupSearchTimer); groupSearchVersion++; editor?.groupForm?.dispose(); clearKey(); });
 })();
