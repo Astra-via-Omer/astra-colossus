@@ -13,6 +13,8 @@ import { ControlPlane } from './controlPlane.mjs';
 import { endpointFetch } from './endpoints.mjs';
 import { providerRequest, providerResult, AnthropicStream } from './providerAdapters.mjs';
 import { MediaObserver, mediaCostUsd } from './media.mjs';
+import { accountDisplay, DisplayError } from './account-display.mjs';
+import { validDisplayPreferences } from './display-contract.mjs';
 
 async function boundedJson(stream, limit, upstream = false) {
   const chunks = []; let size = 0;
@@ -168,10 +170,11 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
       const url = new URL(req.url, config.origin), method = req.method;
       if (method === 'GET' && url.pathname === '/healthz') { operation = 'health'; return json(res, { service: 'colossus', status: draining ? 'draining' : 'ready' }, draining ? 503 : 200); }
       const assets = { '/': ['welcome.html', 'text/html'], '/welcome.js': ['welcome.js', 'text/javascript'], '/console.js': ['console.js', 'text/javascript'], '/console.css': ['console.css', 'text/css'], '/operations.js': ['operations.js', 'text/javascript'], '/operations.css': ['operations.css', 'text/css'], '/theme.js': ['theme.js', 'text/javascript'], '/astra-logo.svg': ['astra-logo.svg', 'image/svg+xml'], '/astra-logo-light.svg': ['astra-logo-light.svg', 'image/svg+xml'], '/astra-icon.svg': ['astra-icon.svg', 'image/svg+xml'] };
+      Object.assign(assets, { '/astra-display.js': ['astra-display.js', 'text/javascript'], '/display-contract.mjs': ['display-contract.mjs', 'text/javascript'], '/astra-display.css': ['astra-display.css', 'text/css'] });
       const asset = Object.hasOwn(assets, url.pathname) ? assets[url.pathname] : undefined;
       if (method === 'GET' && asset) { operation = 'console'; res.writeHead(200, { 'Content-Type': `${asset[1]}; charset=utf-8` }); return res.end(await readFile(new URL(asset[0], import.meta.url))); }
       if (draining) fail(503, 'draining', 'Colossus is shutting down. Retry another instance.');
-      const management = url.pathname.startsWith('/v1/control') || url.pathname === '/v1/monitoring' || url.pathname === '/session';
+      const management = url.pathname.startsWith('/v1/control') || url.pathname === '/v1/monitoring' || url.pathname === '/session' || url.pathname === '/v1/preferences';
       if (management ? controlInflight >= 8 : inflight >= config.maxInflight) { res.setHeader('Retry-After', '2'); fail(429, 'capacity', 'This instance is at capacity. Retry shortly.'); }
       if (management) controlInflight++; else inflight++;
       admitted = management ? 'control' : 'inference';
@@ -187,6 +190,18 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
         return res.end(await readFile(new URL('console.html', import.meta.url)));
       }
       if (method === 'GET' && url.pathname === '/session') { operation = 'account'; return json(res, profile(await browserIdentity(req))); }
+      if (url.pathname === '/v1/preferences') {
+        operation = 'display_preferences'; const identity = await browserIdentity(req);
+        if (!['GET', 'PUT'].includes(method)) fail(405, 'method_not_allowed', 'Use GET or PUT for personal display settings.');
+        let preferences;
+        if (method === 'PUT') {
+          if (!(req.headers['content-type'] || '').startsWith('application/json')) fail(415, 'content_type', 'Use application/json.');
+          preferences = await boundedJson(req, 2048);
+          if (!validDisplayPreferences(preferences)) fail(400, 'invalid_preferences', 'Choose valid display settings.');
+        }
+        try { return json(res, await accountDisplay({ token: identity.token, userId: identity.id, url: config.supabaseUrl, key: config.anonKey, preferences, fetcher })); }
+        catch (error) { if (error instanceof DisplayError) fail(error.status, 'display_preferences_unavailable', error.message); throw error; }
+      }
       if (method === 'POST' && url.pathname === '/session') {
         operation = 'sign_in'; checkOrigin(req);
         if (!(req.headers['content-type'] || '').startsWith('application/json')) fail(415, 'content_type', 'Use application/json.');

@@ -20,6 +20,10 @@ async function start(t, extra = {}) {
     }
     if (url.endsWith('/auth/v1/user')) {
       assert.equal(options.headers.Authorization, 'Bearer synthetic-account-token');
+      if (options.method === 'PUT') {
+        const data = JSON.parse(options.body); assert.deepEqual(Object.keys(data), ['data']); assert.deepEqual(Object.keys(data.data), ['astra_display_preferences']);
+        state.user.user_metadata = { ...state.user.user_metadata, ...data.data };
+      }
       return Response.json(state.user, { status: state.authStatus });
     }
     if (url.includes('/rest/v1/rpc/')) {
@@ -61,6 +65,21 @@ test('public welcome and private application require an opaque account cookie; m
   const room = await app.call('/app', cookie); assert.equal(room.status, 200); assert.match(await room.text(), /id="run"/);
   assert.equal(room.headers.get('cache-control'), 'no-store');
   assert(!JSON.stringify(app.logs).includes('synthetic-account-token')); assert(!JSON.stringify(app.logs).includes('synthetic-password'));
+});
+
+test('personal display API requires the current admin cookie and same-origin writes, and saves only its own account field', async t => {
+  const app = await start(t), choice = { version: 1, font: 'verdana', textSize: 22, textWeight: 'bold', spacing: 'roomy', contrast: 'high', motion: 'reduced' };
+  assert.equal((await app.call('/v1/preferences')).status, 401);
+  assert.equal((await app.call('/v1/preferences', undefined, 'GET', undefined, { Authorization: 'Bearer synthetic-machine-key' })).status, 401);
+  const { cookie } = await app.login();
+  let response = await app.call('/v1/preferences', cookie); assert.equal(response.headers.get('cache-control'), 'no-store'); assert.equal((await response.json()).userId, adminId);
+  assert.equal((await app.call('/v1/preferences', cookie, 'PUT', choice, { Origin: 'https://foreign.example' })).status, 403);
+  assert.equal((await app.call('/v1/preferences', cookie, 'PUT', { ...choice, userId: otherId })).status, 400);
+  response = await app.call('/v1/preferences', cookie, 'PUT', choice); assert.equal(response.status, 200); assert.deepEqual((await response.json()).preferences, choice);
+  assert.equal(app.state.user.user_metadata.name, 'Test admin'); assert.equal(app.state.user.app_metadata.role, 'admin');
+  assert.deepEqual((await (await app.call('/v1/preferences', cookie)).json()).preferences, choice);
+  app.state.user.app_metadata.role = 'viewer'; assert.equal((await app.call('/v1/preferences', cookie, 'PUT', choice)).status, 403);
+  assert(!JSON.stringify(app.logs).includes('synthetic-account-token'));
 });
 
 test('logout, replacement login and server expiry prevent cookie replay', async t => {
