@@ -5,7 +5,7 @@ import { createService } from '../src/server.mjs';
 import { Sessions } from '../src/sessions.mjs';
 
 const origin = 'http://localhost:4003';
-const settings = { ASTRA_PROVIDER_CONFIG_JSON: '{"key":"synthetic-machine-key","model":"synthetic-model"}', SUPABASE_URL: 'https://auth.example', SUPABASE_ANON_KEY: 'public-test-key', COLOSSUS_ORIGIN: origin };
+const settings = { COLOSSUS_REQUIRE_GROUPS: 'false', ASTRA_PROVIDER_CONFIG_JSON: '{"key":"synthetic-machine-key","model":"synthetic-model"}', SUPABASE_URL: 'https://auth.example', SUPABASE_ANON_KEY: 'public-test-key', COLOSSUS_ORIGIN: origin };
 const adminId = '11111111-1111-1111-1111-111111111111', otherId = '22222222-2222-2222-2222-222222222222';
 async function start(t, extra = {}) {
   const user = { id: adminId, email: 'admin@example.com', app_metadata: { role: 'admin' }, user_metadata: { name: 'Test admin' } };

@@ -40,7 +40,7 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
   function checkOrigin(req) {
     if (req.headers.origin !== config.origin) fail(403, 'origin_denied', 'This browser origin is not allowed.');
   }
-  async function userFor(token) {
+  async function userFor(token, callingSystem = 'colossus') {
     if (!config.supabaseUrl || !config.anonKey) fail(503, 'accounts_unavailable', 'The shared account backend is not configured.');
     let response;
     try { response = await fetcher(`${config.supabaseUrl}/auth/v1/user`, { headers: { apikey: config.anonKey, Authorization: `Bearer ${token}` }, redirect: 'error', signal: AbortSignal.timeout(8000) }); }
@@ -51,11 +51,12 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
     try { user = await response.json(); }
     catch { fail(503, 'auth_unavailable', 'Account access could not be checked.'); }
     if (!user || typeof user !== 'object' || Array.isArray(user)) fail(503, 'auth_unavailable', 'Account access could not be checked.');
-    const role = user.app_metadata?.role;
+    const role = callingSystem === 'lab' && user.app_metadata?.lab ? user.app_metadata.lab.role : user.app_metadata?.role;
     // A Colossus assignment can revoke access independently of Workflow.
-    const assignment = user.app_metadata?.colossus;
+    const assignment = user.app_metadata?.[callingSystem];
     if (!user.id || user.app_metadata?.disabled || user.deleted_at || (user.banned_until && Date.parse(user.banned_until) > Date.now()) ||
-        assignment?.enabled === false || (user.app_metadata?.system_access && user.app_metadata.system_access.colossus !== true) ||
+        assignment?.enabled === false || (user.app_metadata?.system_access && user.app_metadata.system_access[callingSystem] !== true) ||
+        (callingSystem === 'workflow' && (user.app_metadata?.workspace_scope === 'workflow' || user.app_metadata?.workspace_approved === false)) ||
         !['admin', 'participant', 'reader', 'viewer'].includes(role)) fail(403, 'access_denied', 'This account cannot access Colossus.');
     const name = user.user_metadata?.full_name || user.user_metadata?.name;
     return { kind: 'account', admin: role === 'admin', role, id: user.id,
@@ -85,11 +86,12 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
     if (clientHeader && !client) fail(401, 'service_key_invalid', 'Supply a valid Colossus system key.');
     const scoped = bearer?.startsWith('cs_') ? await control.authenticateKey(bearer) : null;
     if (scoped) return scoped;
-    const attach = identity => client ? { ...identity, systemId: client.systemId, keyId: client.keyId, allowedModels: client.allowedModels } : identity;
+    const attach = identity => client ? { ...identity, systemId: client.systemId, keyId: client.keyId, allowedModels: client.allowedModels,
+      requireGroup: client.requireGroup, organizationIds: client.organizationIds, registrationProviderIds: client.registrationProviderIds } : identity;
     const serviceId = () => 'service-' + createHash('sha256').update('colossus-usage\0').update(bearer).digest('hex').slice(0, 12);
     if (config.adminKey && equalSecret(bearer, config.adminKey)) return attach({ kind: 'service', id: serviceId(), admin: true });
     if (config.keys.some(key => equalSecret(bearer, key))) return attach({ kind: 'service', id: serviceId(), admin: !config.adminKey });
-    if (bearer) return attach(await userFor(bearer));
+    if (bearer) return attach(await userFor(bearer, client?.systemId || 'colossus'));
     return attach(await browserIdentity(req));
   }
   const cookie = (token, seconds) => `colossus_session=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${seconds}${config.production ? '; Secure' : ''}`;
@@ -106,7 +108,8 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
     catch { fail(503, 'access_unavailable', 'Shared user controls returned an invalid response.'); }
   }
   async function upstream(body, signal, process, engine, identity, task = 'chat') {
-    const route = await control.route(body.model);
+    const route = await control.assignedRoute(identity, body, task, identity.activity || '');
+    Object.assign(process, route.routing || {});
     if ((route.task || 'chat') !== task) fail(400, 'model_task', 'Choose a model route configured for this operation.');
     let request;
     if (task === 'embedding') {
@@ -122,6 +125,7 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
     const prepared = providerRequest(route, request, task);
     const reservation = await control.reserve(identity, route, request, process.requestId, process.calls.length + 1);
     const call = monitoring.call(process, route, engine);
+    Object.assign(call, route.routing || {});
     call.reservation = reservation;
     call.providerId = route.providerId || null;
     let response;
@@ -142,7 +146,7 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
       const data = providerResult(route, await boundedJson(Readable.fromWeb(response.body), 8000000, true));
       monitoring.finishCall(call, 'completed', data.usage, response.status);
       return { engine: { id: engine.id, version: engine.version }, model: route.alias, providerModel: route.model,
-        ...validateResult(data, input.sources), usage: data.usage };
+        ...validateResult(data, input.sources), usage: data.usage, colossus: { ...route.routing, model: route.alias, pricing: route.pricing || null } };
     } catch (error) { monitoring.finishCall(call, signal.aborted ? 'cancelled' : 'failed'); throw error; }
   }
   const server = http.createServer(async (req, res) => {
@@ -243,7 +247,7 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
         const body = await boundedJson(req, 32768);
         if (!body || typeof body !== 'object' || Array.isArray(body)) fail(400, 'invalid_request', 'Supply a JSON object.');
         const path = url.pathname.slice('/v1/control/'.length).split('/');
-        if (path.length === 1 && ['providers', 'models', 'systems', 'integrations', 'jobs'].includes(path[0])) return json(res, { record: await control.save(path[0], body, actor) });
+        if (path.length === 1 && ['providers', 'models', 'systems', 'integrations', 'jobs', 'groups'].includes(path[0])) return json(res, { record: await control.save(path[0], body, actor) });
         if (path.length === 1 && path[0] === 'keys' && method === 'POST') return json(res, await control.issueKey(body, actor), 201);
         if (path.length === 3 && ['providers', 'integrations'].includes(path[0]) && path[2] === 'check') return json(res, await control.checkConnection(path[0], path[1], actor));
         if (path.length === 3 && path[0] === 'keys' && path[2] === 'revoke') return json(res, await control.revokeKey(path[1], actor));
@@ -277,6 +281,13 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
         return json(res, { updated: true });
       }
       const identity = await authenticate(req);
+      const activity = req.headers['x-colossus-activity'];
+      if (activity !== undefined) {
+        if (!identity.keyId || typeof activity !== 'string' || !/^[a-z][a-z0-9._:-]{0,119}$/.test(activity) || !activity.startsWith(identity.systemId + '.'))
+          fail(403, 'activity_denied', 'Activity attribution requires a matching scoped system key.');
+        identity.activity = activity;
+      }
+      if (method === 'GET' && url.pathname === '/v1/lab/models') return json(res, await control.labCatalog(identity));
       if (method === 'GET' && url.pathname === '/v1/capabilities') {
         operation = 'capabilities'; return json(res, { service: 'colossus', admin: identity.admin,
           engineCreation: hasRegistry(),
@@ -290,6 +301,11 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
       if (!(req.headers['content-type'] || '').startsWith('application/json')) fail(415, 'content_type', 'Use application/json.');
       const body = await boundedJson(req, config.bodyLimit);
       if (!body || typeof body !== 'object' || Array.isArray(body)) fail(400, 'invalid_request', 'Supply a JSON object.');
+      if (url.pathname === '/v1/lab/models') {
+        operation = 'lab_registration';
+        const result = await control.registerLabModel(body, identity);
+        return json(res, result, result.replay ? 200 : 201);
+      }
       const inferenceOperations = { '/v1/chat/completions': 'chat', '/v1/embeddings': 'embedding', '/v1/runs': 'run_engine', '/v1/engines/test': 'test_engine', '/v1/evaluations': 'evaluate', '/v1/media/observe': 'observe_media' };
       if (Object.hasOwn(inferenceOperations, url.pathname)) {
         operation = inferenceOperations[url.pathname];
@@ -298,6 +314,8 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
           if(!['admin','participant'].includes(identity.role)) fail(403,'analyst_required','Audio/video observation requires an analyst account.');
           if(!equalSecret(req.headers['x-enigma-media-key'],config.mediaIngestKey)) fail(403,'media_gateway_required','Account media analysis must come through the authorized Enigma gateway.');
         }
+        const access = await control.groupAccess(identity);
+        identity.groupId = access.group?.id || null; identity.organizationId = access.organizationId;
         process = await monitoring.start(identity, requestId, operation);
         await control.startProcess(process); activeControllers.set(requestId, controller);
         if (control.enabled) {
@@ -339,7 +357,7 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
         }
         const data = providerResult(route, await boundedJson(Readable.fromWeb(response.body), 8000000, true));
         monitoring.finishCall(call, 'completed', data.usage, response.status);
-        return await complete(data);
+        return await complete({ ...data, colossus: { ...route.routing, model: route.alias, pricing: route.pricing || null } });
       }
       if (url.pathname === '/v1/engines') {
         operation = 'create_engine'; if (!identity.admin) fail(403, 'admin_required', 'Only admins can create engine versions.');

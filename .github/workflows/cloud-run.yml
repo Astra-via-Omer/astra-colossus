@@ -109,6 +109,8 @@ jobs:
             COLOSSUS_MEDIA_MODEL=gemini-3.1-flash-lite
             COLOSSUS_ENGINE_BUCKET=${{ vars.COLOSSUS_ENGINE_BUCKET }}
             COLOSSUS_CONTROL_DATABASE=${{ vars.COLOSSUS_CONTROL_DATABASE || 'astra-colossus' }}
+            COLOSSUS_WORKSPACE_DATABASE=${{ vars.COLOSSUS_WORKSPACE_DATABASE || 'astra-workspace' }}
+            COLOSSUS_REQUIRE_GROUPS=${{ vars.COLOSSUS_REQUIRE_GROUPS || 'true' }}
             COLOSSUS_PRICING_JSON=${{ steps.pricing.outputs.value }}
             SUPABASE_URL=${{ vars.SUPABASE_URL }}
             SUPABASE_ANON_KEY=${{ vars.SUPABASE_ANON_KEY }}

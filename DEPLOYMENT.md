@@ -12,7 +12,7 @@ The `production` environment permits only branch `main`. The federation provider
 - Deploy identity: `astra-colossus-deploy@astra-via.iam.gserviceaccount.com`
 - Runtime identity: `astra-colossus-runtime@astra-via.iam.gserviceaccount.com`
 - Artifact Registry: `me-west1-docker.pkg.dev/astra-via/astra-images/astra-colossus:<commit>`
-- Provider secret: `astra-provider-config:1`, reused from Workflow. Never stored in GitHub or the image.
+- Provider secret: `astra-provider-config:1`, retained here for upstream credentials. Workflow now uses its separate scoped-key secret `astra-workflow-colossus`. Never stored in GitHub or the image.
 - Vault secret: `astra-colossus-vault:1`, dedicated to encrypting administrator-supplied connection credentials.
 - Operations database: Firestore Native `astra-colossus`, `me-west1`, with deletion protection.
 - Account backend: the existing shared Supabase project URL and publishable key, without its service-role credential.
@@ -21,7 +21,7 @@ The deployment identity has Cloud Run Developer, writer on `astra-images`, and S
 
 Required repository variables: `GCP_PROJECT_ID`, `GCP_REGION`, `GCP_ARTIFACT_REPOSITORY`, `GCP_WORKLOAD_IDENTITY_PROVIDER`, `GCP_DEPLOY_SERVICE_ACCOUNT`, `GCP_RUNTIME_SERVICE_ACCOUNT`, `ASTRA_PROVIDER_SECRET_VERSION`, `COLOSSUS_ENGINE_BUCKET`, `SUPABASE_URL`, `SUPABASE_ANON_KEY`.
 
-The workflow defaults `COLOSSUS_CONTROL_DATABASE` to `astra-colossus` and `COLOSSUS_VAULT_SECRET_VERSION` to `1`. Set these optional repository variables when using a different database or vault version. Set `GOOGLE_CLOUD_PROJECT` or `GCLOUD_PROJECT` to override the operations project; it defaults to `astra-via`.
+The workflow defaults `COLOSSUS_WORKSPACE_DATABASE` to `astra-workspace` and `COLOSSUS_REQUIRE_GROUPS` to `true`. The latter can be explicitly set to `false` during a staged migration; restore it after provisioning groups. The workflow defaults `COLOSSUS_CONTROL_DATABASE` to `astra-colossus` and `COLOSSUS_VAULT_SECRET_VERSION` to `1`. Set these optional repository variables when using a different database or vault version. Set `GOOGLE_CLOUD_PROJECT` or `GCLOUD_PROJECT` to override the operations project; it defaults to `astra-via`.
 
 ## Operations database and vault
 
@@ -85,3 +85,9 @@ References: [GitHub federation](https://docs.cloud.google.com/iam/docs/workload-
 ### Native broadcast observer
 
 The Colossus workflow configures the Google project, `global` location and `gemini-3.1-flash-lite` model for `/v1/media/observe`. The custom project role `astraColossusMediaPredict` contains only `aiplatform.endpoints.predict` and is assigned to `astra-colossus-runtime@astra-via.iam.gserviceaccount.com`. No Google key is placed in an application or browser. Keep media capability disabled by removing `COLOSSUS_MEDIA_PROJECT` if the provider becomes unavailable. Existing text routes and usage monitoring continue independently.
+
+## Live organization approvals and model groups
+
+The updated provisioning script additionally grants `roles/datastore.viewer`, conditioned on the Workspace database, so Colossus can read current organization approvals. Pass `--workspace-database` if its name differs from `astra-workspace`. The runtime receives no Workspace encryption key and no write permission there. Re-run provisioning before enabling group organization restrictions or scoped account calls. Configure groups through the browser administrator console; account inference requires a group by default, while the console remains available to set up the first group.
+
+Deploy Colossus first, configure groups and scoped Workflow/Lab keys, then deploy those callers with their separate backend secrets. Keep the existing upstream provider secret in Colossus. Group-based selection is effective only after these deployments and assignments; source tests do not update live infrastructure.

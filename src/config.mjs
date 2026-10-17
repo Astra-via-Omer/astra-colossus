@@ -50,11 +50,13 @@ export function configuration(env = process.env) {
   }
   if (env.COLOSSUS_SESSION_SECRET && env.COLOSSUS_SESSION_SECRET.length < 32) throw Error('COLOSSUS_SESSION_SECRET needs at least 32 characters');
   if (env.COLOSSUS_CONTROL_DATABASE && !/^[a-z][a-z0-9-]{2,62}$/.test(env.COLOSSUS_CONTROL_DATABASE)) throw Error('Invalid control database ID');
+  if (env.COLOSSUS_WORKSPACE_DATABASE && !/^(?:\(default\)|[a-z][a-z0-9-]{2,62})$/.test(env.COLOSSUS_WORKSPACE_DATABASE)) throw Error('Invalid workspace database ID');
   if (env.COLOSSUS_VAULT_SECRET && env.COLOSSUS_VAULT_SECRET.length < 32) throw Error('COLOSSUS_VAULT_SECRET needs at least 32 characters');
   if (env.NODE_ENV === 'production' && env.COLOSSUS_CONTROL_DATABASE && !env.COLOSSUS_VAULT_SECRET) throw Error('A dedicated COLOSSUS_VAULT_SECRET is required for the operations database');
   if (env.NODE_ENV === 'production' && !origin.startsWith('https://')) throw Error('Production needs an HTTPS COLOSSUS_ORIGIN');
   if(env.COLOSSUS_MEDIA_INGEST_KEY && (env.COLOSSUS_MEDIA_INGEST_KEY.length<32 || env.COLOSSUS_MEDIA_INGEST_KEY.length>512 || /\s/.test(env.COLOSSUS_MEDIA_INGEST_KEY))) throw Error('Invalid media gateway credential');
   return { routes, keys, media: mediaConfiguration(env), mediaIngestKey:env.COLOSSUS_MEDIA_INGEST_KEY || '', adminKey: env.COLOSSUS_ADMIN_KEY || '', origin,
+    requireGroups: env.COLOSSUS_REQUIRE_GROUPS !== 'false',
     maxInflight: integer(env, 'COLOSSUS_MAX_INFLIGHT', 16, 1, 1000),
     timeout: integer(env, 'COLOSSUS_TIMEOUT_MS', 90000, 10, 600000),
     bodyLimit: integer(env, 'COLOSSUS_BODY_LIMIT', 2000000, 1024, 16000000),
@@ -63,6 +65,7 @@ export function configuration(env = process.env) {
     engineBucket: env.COLOSSUS_ENGINE_BUCKET || '', sessionBucket: env.COLOSSUS_SESSION_BUCKET || env.COLOSSUS_ENGINE_BUCKET || '',
     usageBucket: env.COLOSSUS_USAGE_BUCKET || env.COLOSSUS_ENGINE_BUCKET || '',
     controlProject: env.GOOGLE_CLOUD_PROJECT || env.GCLOUD_PROJECT || 'astra-via', controlDatabase: env.COLOSSUS_CONTROL_DATABASE || '',
+    workspaceDatabase: env.COLOSSUS_WORKSPACE_DATABASE || 'astra-workspace',
     vaultSecret: env.COLOSSUS_VAULT_SECRET || '',
     sessionSecret: env.COLOSSUS_SESSION_SECRET || providerKey || Object.values(routes)[0].key,
     production: env.NODE_ENV === 'production' };

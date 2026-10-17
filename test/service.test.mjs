@@ -8,7 +8,7 @@ import { createService } from '../src/server.mjs';
 import { builtins, validateResult } from '../src/engines.mjs';
 
 const key = 'synthetic-provider-key';
-const env = { ASTRA_PROVIDER_CONFIG_JSON: JSON.stringify({ key, model: 'test-model' }), COLOSSUS_ORIGIN: 'http://localhost:4002' };
+const env = { COLOSSUS_REQUIRE_GROUPS: 'false', ASTRA_PROVIDER_CONFIG_JSON: JSON.stringify({ key, model: 'test-model' }), COLOSSUS_ORIGIN: 'http://localhost:4002' };
 const input = { focus: 'Capacity', sources: [{ sourceId: 'measurement', sectionId: '1', text: 'Measured capacity is 20 units.', timestampMs: 1200 }] };
 const claim = { text: 'Capacity is 20 units.', quote: input.sources[0].text, sourceId: 'measurement', sectionId: '1', assessment: 'The source asserts a measurement.', nextCheck: 'Inspect measurement methods.', identity: 2, support: 1, reasoning: 1, importance: 4 };
 const completion = claims => ({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify({ claims }) } }], usage: { total_tokens: 20 } });
@@ -81,7 +81,7 @@ test('shared Supabase registry supports multiple instances without local state',
     }
     return Response.json(completion([claim]));
   };
-  const settings = { SUPABASE_URL: 'https://auth.example', SUPABASE_SERVICE_ROLE_KEY: 'registry-server-key' };
+  const settings = { COLOSSUS_REQUIRE_GROUPS: 'false', SUPABASE_URL: 'https://auth.example', SUPABASE_SERVICE_ROLE_KEY: 'registry-server-key' };
   const first = await start(t, settings, fetcher), second = await start(t, settings, fetcher);
   const manifest = { ...builtins[0], id: 'shared-check' };
   assert.equal((await first.call('/v1/engines', manifest)).status, 201);

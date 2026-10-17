@@ -22,7 +22,7 @@ Admins can load/search existing accounts in **User access**, review a role or su
 
 `COLOSSUS_API_KEYS_JSON` can supply independent service keys without changing the provider key. `COLOSSUS_ADMIN_KEY` separates admin service calls; when omitted, the shared service key has admin access. These keys are for trusted backend services. End-user interfaces should use account sign-in.
 
-The separate Personal Workspace repository includes the optional `colossus` Compose profile. For Docker development there, set `ASTRA_PROVIDER_CONFIG_JSON` and the shared account variables, then run `COLOSSUS_URL=http://colossus:8080 COLOSSUS_MODEL=astra-default docker compose -f compose.demo.yml --profile colossus up --build` from the repository root. Workflow uses the internal Colossus endpoint, the console is on port 4002, and engine versions live in a named local volume. The workspace Docker example explicitly permits local HTTP. Cloud deployments require HTTPS. The existing default Compose profile retains its direct provider connection.
+The separate Personal Workspace uses `COLOSSUS_URL` (HTTPS in production) and a scoped Workflow system key in its own private configuration or `astra-workflow-colossus` deployment secret. Run Colossus separately for local development and use an HTTP loopback origin outside production. The Workspace has no direct-provider fallback. Keep its scoped key separate from this service's upstream `ASTRA_PROVIDER_CONFIG_JSON`.
 
 ## Astra Via design
 
@@ -151,18 +151,11 @@ Environment routes bootstrap the registry. With the operations database enabled,
 
 Chat accepts typed text, image, input-audio and video-URL parts only when the selected route advertises that modality. These are provider-specific capabilities and must be verified against the provider before enabling them. Compatible chat does not decode media, sample frames, open microphones/cameras or maintain live WebSocket media sessions. The separate native broadcast endpoint described below accepts sampled audio/frames. SSE is incremental model output. Observer can also submit bounded timestamped transcripts/frame descriptions as source sections. Provenance and timestamps survive engine validation.
 
-Lab's current engine handoff is a preview. An integration can export a reviewed prompt manifest, test it through `/v1/engines/test`, save a new version through `/v1/engines`, and attach `/v1/evaluations` results to its release evidence. The existing Lab UI and its research/GPU release gates were not changed. Learned models can later be served behind a compatible route; prompt engines do not train models.
+Lab's Engine handoff registers deployed model releases through `/v1/lab/models`; see the lifecycle below. Executable algorithm packages and GPU orchestration remain future work. Prompt-engine manifests use the separate `/v1/engines`, `/v1/engines/test` and `/v1/evaluations` APIs; prompt engines do not train models.
 
 ## Connect the existing workspace
 
-All existing extraction, comparison, reassessment, executive interpretation and admin model discovery now share `app/src/app/api/analysis/provider.ts`.
-
-```text
-COLOSSUS_URL=https://colossus.astra-via.com
-COLOSSUS_MODEL=astra-default
-```
-
-Set these as repository variables for the existing web deployment workflow after Colossus HTTPS is verified. The same injected provider key authenticates to Colossus by default. An independent key can be supplied through server-side `COLOSSUS_API_KEY`. Without `COLOSSUS_URL`, existing deployments continue using the direct provider connection. This keeps cutover explicit and allows rollback by removing the URL.
+All Workspace extraction, comparison, reassessment and executive calls use `app/src/server/colossus.ts`. Set `COLOSSUS_URL` to the gateway HTTPS origin; its default is `https://colossus.astra-via.com`. Issue a scoped Workflow key, store it in a separate `astra-workflow-colossus` JSON secret as `{"key":"SCOPED_COLOSSUS_KEY","allowedEmails":[]}`, and set Workspace's `ASTRA_COLOSSUS_SECRET_VERSION` repository variable. Assign the verified users to groups and grant their routes to that system key. Workflow normalizes the placeholder to `astra-default`; Colossus selects the actual route. Direct-provider keys and fallback are disabled. See Workspace's `COLOSSUS-FLOW.md` for the coordinated rollout.
 
 ## Validate
 
@@ -170,7 +163,7 @@ Set these as repository variables for the existing web deployment workflow after
 npm test
 ```
 
-The test suite covers control-plane access, encrypted credential isolation, scoped keys and dual user/system attribution, atomic concurrent spending reservations, unknown-usage holds, Firestore conflict retries, native Anthropic JSON/SSE, embeddings, endpoint restrictions and cancellation at full inference capacity. It also retains coverage for admin-only console/monitoring, live role revocation, cost snapshots, incomplete usage, durable history, shared accounts, encrypted cross-instance sessions, CSRF, engine persistence, exact quotations, evaluations and sanitized errors. In the separate Personal Workspace repository, `scripts/check-colossus.cjs` drives the actual HTTP gateway from the current workspace's review stages using a synthetic provider. No real model key or paid inference is needed for these checks.
+The test suite covers control-plane access, encrypted credential isolation, scoped keys and dual user/system attribution, atomic concurrent spending reservations, unknown-usage holds, Firestore conflict retries, native Anthropic JSON/SSE, embeddings, endpoint restrictions and cancellation at full inference capacity. It also retains coverage for admin-only console/monitoring, live role revocation, cost snapshots, incomplete usage, durable history, shared accounts, encrypted cross-instance sessions, CSRF, engine persistence, exact quotations, evaluations and sanitized errors. The Colossus tests exercise real local HTTP requests for group selection and Lab publication. In Personal Workspace, `scripts/check-colossus-flow.cjs` verifies gateway transport, attribution, pricing, configuration migration and failure behavior with synthetic responses. No real model key or paid inference is needed for these checks.
 
 See [DEPLOYMENT.md](DEPLOYMENT.md) for the cloud and custom-domain steps.
 
@@ -185,3 +178,23 @@ The gateway does not persist or log audio, images, transcripts or source quotati
 Account calls additionally require the server-only `X-Enigma-Media-Key` credential. A user's Astra token alone cannot bypass Enigma's recording controls and wallet admission by calling the media endpoint directly. The dedicated Secret Manager secret `astra-enigma-media-ingest` is available only to the Enigma and Colossus runtimes; it is not a provider key and cannot authenticate to general Colossus APIs by itself. Existing trusted machine API keys retain infrastructure-test access.
 
 When configured, Google Vertex AI and `broadcast-media` appear in Providers and Models with runtime-identity authentication. Administrators can rename or pause these native records; model/location and modality pricing remain deployment-managed. Scoped keys must explicitly grant `broadcast-media`. System pauses, spending reservations and cancellation apply to media as well as chat; the existing Enigma account-gateway requirement remains enforced. Preflight rejection creates no inference call or spending reservation.
+
+## User groups and Lab model releases
+
+**User groups** assigns verified account IDs to one centrally controlled group. Set one model alias or an ordered set, optionally restrict the group to an approved Workspace organization and assign an activity to a specific model from that set. Colossus ignores a calling app's model override and selects a granted route that supports the task, input modalities and output limit. It does not retry another provider after an inference failure. Account inference requires a group by default, even without a scoped system header. `COLOSSUS_REQUIRE_GROUPS=false` is an explicit temporary migration switch; restore strict enforcement after assignments are configured. Browser administrators can manage groups before assigning themselves for inference.
+
+Groups and account-to-group mappings are written atomically. Group pauses, removals, provider pauses, key revocations and live organization membership changes affect subsequent admissions. Membership comes from the raw Workspace Firestore records in `COLOSSUS_WORKSPACE_DATABASE` (default `astra-workspace`), using database-scoped read-only runtime IAM. Re-run the updated provisioning script to prepare that permission. Colossus never accepts a caller-supplied organization. Calls retain group/organization/activity attribution and the actual route's prices. JSON chat responses add a `colossus` metadata object for the calling backend's accounting.
+
+`POST /v1/control/groups` creates/updates `{id,name,memberIds,modelIds,organizationId,activityModels,enabled}`. Each account can belong to one group. `modelIds` is ordered; optional `activityModels` maps an activity such as `workflow.analysis` or `workflow.analysis.extraction` to an alias in that group. `GET /v1/control` includes the groups. Writes require the existing administrator browser session and origin checks.
+
+System key creation accepts `requireGroup` (defaults to true), optional `organizationIds` and, for Lab keys only, `registrationProviderIds`. Machine-only integrations explicitly set `requireGroup:false`; they cannot use account-bound group inference. Existing legacy keys preserve their compatibility behavior. Keep system model grants aligned with group assignments. Native media still uses its dedicated endpoint and requires `broadcast-media` in the group's model set.
+
+`GET /v1/lab/models` lists permitted provider connections and releases for the live account's organization. `POST /v1/lab/models` publishes `{id,version,name,providerId,model,maxTokens,evaluationUrl}`. Both a verified Lab administrator and a scoped Lab key granting that provider are required. The backend cannot supply a provider URL or credential. Immutable aliases use `id:major.minor.patch`; retries of the same definition return the existing release and changed definitions conflict. Releases start paused with unknown pricing; activate, price and assign them in Colossus before use. This registers an already deployed model, without launching training or publishing executable engine code.
+
+Keep upstream `astra-provider-config` in Colossus. Workflow uses a separate `astra-workflow-colossus` scoped-key JSON secret; Lab uses a separate `astra-lab-colossus` scoped key. Multiple providers and overlapping application keys are supported; issue a replacement, deploy and verify it, then revoke the previous key. Adding provider connections does not require app changes. Automatic cycling among upstream credentials is not implemented.
+
+## Coordinated product provisioning
+
+Run `node scripts/provision-product-routing.mjs --project astra-via --account YOUR_CLOUD_ACCOUNT` to inspect a plan, then add `--apply` to prepare the rollout. It preserves existing group assignments, adds currently approved active accounts to default groups (separated by approved organization and media access), raises the default route's output limit to 8,000 if needed, creates separate scoped backend secrets for Workflow, Lab, Enigma and Evidence, grants each runtime access only to its own new secret, and sets numeric GitHub deployment variables. It retains the existing provider and vault secrets, prices, account roles and application approvals. Plaintext keys remain in memory/stdin. Provision database-scoped membership read IAM with `provision-control-plane.py` first. Deploy and verify Colossus before pushing the callers.
+
+Evidence's optional assistant uses `evidence.review` through the same gateway and group assignment. Its output is trace-checked AI assistance, with no automatic human review submission, funding or publication.

@@ -10,13 +10,14 @@ import { providerRequest, providerResult, AnthropicStream } from '../src/provide
 import { endpointUrl, publicAddress } from '../src/endpoints.mjs';
 import { tokenUsage, tokenCost } from '../src/usage.mjs';
 
-const settings = { ASTRA_PROVIDER_CONFIG_JSON: '{"key":"managed-private-key","model":"synthetic-model"}', SUPABASE_URL: 'https://auth.example', SUPABASE_ANON_KEY: 'public-key', COLOSSUS_ORIGIN: 'http://localhost:4002', COLOSSUS_VAULT_SECRET: 'synthetic-stable-vault-secret-of-32-characters' };
+const settings = { COLOSSUS_REQUIRE_GROUPS: 'false', ASTRA_PROVIDER_CONFIG_JSON: '{"key":"managed-private-key","model":"synthetic-model"}', SUPABASE_URL: 'https://auth.example', SUPABASE_ANON_KEY: 'public-key', COLOSSUS_ORIGIN: 'http://localhost:4002', COLOSSUS_VAULT_SECRET: 'synthetic-stable-vault-secret-of-32-characters' };
 const actor = { kind: 'account', id: '11111111-1111-1111-1111-111111111111', email: 'admin@example.com', admin: true };
 const prices = { inputPerMillion: 2, cachedInputPerMillion: 2, outputPerMillion: 4 };
 function plane() { const config = configuration(settings), store = new ControlStore(config, fetch), control = new ControlPlane(config, fetch, fetch, store); return { config, store, control }; }
 async function service(t, provider, extra = {}) {
-  const logs = [], requests = [];
+  const logs = [], requests = [], users = new Map();
   const fetcher = async (url, options = {}) => {
+    if (url.endsWith('/auth/v1/user') && users.has(options.headers.Authorization)) return Response.json(users.get(options.headers.Authorization));
     if (url.endsWith('/auth/v1/user')) return Response.json({ id: actor.id, email: actor.email, app_metadata: { role: options.headers.Authorization === 'Bearer admin-token' ? 'admin' : 'participant' } });
     requests.push({ url, options }); return provider ? provider(url, options) : Response.json({ choices: [{ message: { content: 'response' }, finish_reason: 'stop' }], usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } });
   };
@@ -25,7 +26,7 @@ async function service(t, provider, extra = {}) {
   t.after(() => new Promise(resolve => { app.server.close(resolve); app.server.closeAllConnections(); }));
   const session = await app.sessions.create('admin-token'), base = 'http://127.0.0.1:' + app.server.address().port;
   const call = (path, body, token, method = body === undefined ? 'GET' : 'POST') => fetch(base + path, { method, headers: { ...(token ? { Authorization: 'Bearer ' + token } : { Cookie: 'colossus_session=' + session.id, Origin: settings.COLOSSUS_ORIGIN }), ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}) }, ...(body !== undefined ? { body: JSON.stringify(body) } : {}) });
-  return { ...app, logs, requests, call, base };
+  return { ...app, logs, requests, users, call, base };
 }
 
 test('credentials are encrypted with provider-bound authentication and never returned by registry APIs', async () => {
@@ -48,7 +49,7 @@ test('system keys show once, enforce model grants and expiry, revoke immediately
   assert.equal((await app.call('/v1/control/providers', { id: 'bad' }, 'account-token')).status, 403);
   let response = await app.call('/v1/control/providers', { id: 'openai', name: 'OpenAI', kind: 'openai', baseUrl: 'https://api.openai.com/v1', apiKey: 'native-key-must-stay-private' }); assert.equal(response.status, 200);
   response = await app.call('/v1/control/models', { id: 'astra-fast', name: 'Astra Fast', providerId: 'openai', model: 'provider-native-model', pricing: prices }); assert.equal(response.status, 200);
-  response = await app.call('/v1/control/keys', { name: 'Enigma backend', systemId: 'enigma', allowedModels: ['astra-fast'], expiresInDays: 30 }); assert.equal(response.status, 201);
+  response = await app.call('/v1/control/keys', { name: 'Enigma backend', systemId: 'enigma', requireGroup: false, allowedModels: ['astra-fast'], expiresInDays: 30 }); assert.equal(response.status, 201);
   const issued = await response.json(); assert.match(issued.oneTimeKey, /^cs_[a-f0-9]{64}$/);
   const registry = await (await app.call('/v1/control')).json(); assert(!JSON.stringify(registry).includes(issued.oneTimeKey)); assert(!JSON.stringify(registry).includes('native-key-must-stay-private'));
   response = await app.call('/v1/chat/completions', { model: 'astra-default', messages: [{ role: 'user', content: 'private user prompt' }] }, issued.oneTimeKey); assert.equal(response.status, 403); assert.equal(app.requests.length, 0);
@@ -167,4 +168,92 @@ test('expired keys and paused systems fail closed before provider admission', as
   const key = (await store.list('keys')).find(value => value.id === issued.key.id);
   await store.mutate(['keys/' + key.hash], ([value]) => [{ ...value, expiresAt: '2000-01-01T00:00:00Z' }]);
   await assert.rejects(control.authenticateKey(issued.oneTimeKey), { code: 'service_key_revoked' });
+});
+
+test('Colossus chooses group models centrally, validates organization membership and never forwards caller overrides', async t => {
+  const app = await service(t, undefined, { COLOSSUS_REQUIRE_GROUPS: 'true' });
+  await app.control.save('models', { id: 'research', name: 'Research', providerId: (await app.control.snapshot()).models[0].providerId, model: 'native-research', maxTokens: 12000, pricing: prices }, actor);
+  const backend = await app.control.issueKey({ name: 'Workflow group gateway', systemId: 'workflow', allowedModels: ['astra-default', 'research'] }, actor);
+  const user = { id: actor.id, email: actor.email, app_metadata: { role: 'participant', system_access: { workflow: true, colossus: false } } };
+  app.users.set('Bearer workflow-user', user);
+  const invoke = (body = {}, key = backend.oneTimeKey) => fetch(app.base + '/v1/chat/completions', { method: 'POST', headers: { Authorization: 'Bearer workflow-user', 'X-Colossus-Service-Key': key, 'X-Colossus-Activity': 'workflow.analysis.extraction', 'Content-Type': 'application/json' }, body: JSON.stringify({ model: 'untrusted-model-override', organizationId: 'forged', messages: [{ role: 'user', content: 'Private evidence' }], ...body }) });
+  assert.equal((await invoke()).status, 409); assert.equal(app.requests.length, 0);
+  app.users.set('Bearer direct-account', { ...user, app_metadata: { role: 'participant', system_access: { colossus: true } } });
+  assert.equal((await app.call('/v1/chat/completions', { messages: [{ role: 'user', content: 'No scoped header' }] }, 'direct-account')).status, 409);
+  await app.control.store.mutate(['workspaceMembers/' + actor.id, 'workspaceOrganizations/acme'], () => [{ status: 'active', orgId: 'acme' }, { status: 'active' }]);
+  await app.control.save('groups', { id: 'researchers', name: 'Researchers', memberIds: [actor.id], modelIds: ['astra-default', 'research'], organizationId: 'acme', activityModels: { 'workflow.analysis': 'research' } }, actor);
+  let response = await invoke(); assert.equal(response.status, 200);
+  let result = await response.json(); assert.equal(result.colossus.model, 'research'); assert.equal(result.colossus.groupId, 'researchers'); assert.equal(result.colossus.organizationId, 'acme'); assert.deepEqual(result.colossus.pricing, { ...prices, currency: 'USD', basis: 'configured' });
+  const sent = JSON.parse(app.requests[0].options.body); assert.equal(sent.model, 'native-research'); assert.equal(sent.organizationId, undefined); assert.equal(app.requests[0].options.headers.Authorization, 'Bearer managed-private-key');
+  const history = await (await app.call('/v1/monitoring')).json(); assert(history.processes.some(process => process.groupId === 'researchers' && process.actor.id === actor.id && process.calls[0].route === 'research'));
+  await app.control.save('groups', { id: 'researchers', activityModels: {}, modelIds: ['astra-default', 'research'] }, actor);
+  response = await invoke({ max_tokens: 8000 }); assert.equal(response.status, 200); assert.equal((await response.json()).colossus.model, 'research');
+  await app.control.save('groups', { id: 'researchers', modelIds: ['research', 'astra-default'] }, actor);
+  const replacement = await app.control.issueKey({ name: 'Workflow rotation', systemId: 'workflow', allowedModels: ['research'], organizationIds: ['acme'] }, actor);
+  assert.equal((await invoke({}, replacement.oneTimeKey)).status, 200);
+  await app.control.revokeKey(backend.key.id, actor); assert.equal((await invoke()).status, 401); assert.equal((await invoke({}, replacement.oneTimeKey)).status, 200);
+  const before = app.requests.length;
+  await app.control.store.mutate(['workspaceMembers/' + actor.id], ([member]) => [{ ...member, status: 'disabled' }]);
+  assert.equal((await invoke({}, replacement.oneTimeKey)).status, 403); assert.equal(app.requests.length, before);
+  await app.control.store.mutate(['workspaceMembers/' + actor.id], ([member]) => [{ ...member, status: 'active' }]);
+  await app.control.save('groups', { id: 'researchers', enabled: false }, actor);
+  assert.equal((await invoke({}, replacement.oneTimeKey)).status, 403); assert.equal(app.requests.length, before);
+  await app.control.save('groups', { id: 'researchers', enabled: true, memberIds: [] }, actor);
+  assert.equal((await invoke({}, replacement.oneTimeKey)).status, 409);
+  assert(!JSON.stringify(app.logs).includes('Private evidence')); assert(!JSON.stringify(app.logs).includes(replacement.oneTimeKey));
+});
+
+test('group assignments stay isolated and concurrent attempts cannot put one account in two groups', async () => {
+  const { control, store, config } = plane(); await control.ensure();
+  const second = new ControlPlane(config, fetch, fetch, store);
+  const attempts = await Promise.allSettled(['alpha', 'beta'].map((group, index) => (index ? second : control).save('groups', { id: group, name: group, memberIds: ['user-one'], modelIds: ['astra-default'] }, actor)));
+  assert.equal(attempts.filter(result => result.status === 'fulfilled').length, 1);
+  const winner = attempts.find(result => result.status === 'fulfilled').value.id;
+  assert.equal((await store.get('groupMembers/user-one')).data.groupId, winner);
+  await control.save('groups', { id: winner, organizationId: 'acme' }, actor);
+  assert.equal((await control.save('groups', { id: winner, organizationId: null }, actor)).organizationId, null);
+  await control.save('groups', { id: winner, enabled: false }, actor);
+  await assert.rejects(control.assignedRoute({ kind: 'account', id: 'user-one' }, { messages: [{ role: 'user', content: 'test' }] }), { code: 'group_paused' });
+  await assert.rejects(control.assignedRoute({ kind: 'account', id: 'user-two', requireGroup: true }, {}), { code: 'group_required' });
+  await control.save('groups', { id: winner, memberIds: [] }, actor);
+  await control.save('groups', { id: 'moved', name: 'Moved', memberIds: ['user-one'], modelIds: ['astra-default'] }, actor);
+  assert.equal((await store.get('groupMembers/user-one')).data.groupId, 'moved');
+});
+
+test('Lab publishes immutable versioned routes through a narrowly scoped registration key without inference', async t => {
+  const app = await service(t), providerId = (await app.control.snapshot()).models[0].providerId;
+  const key = await app.control.issueKey({ name: 'Lab release registration', systemId: 'lab', allowedModels: ['astra-default'], registrationProviderIds: [providerId] }, actor);
+  app.users.set('Bearer lab-admin', { id: actor.id, email: actor.email, app_metadata: { role: 'participant', lab: { enabled: true, role: 'admin' }, system_access: { lab: true, colossus: false } } });
+  const call = (body, token = 'lab-admin', scoped = key.oneTimeKey) => fetch(app.base + '/v1/lab/models', { method: body === undefined ? 'GET' : 'POST', headers: { Authorization: 'Bearer ' + token, 'X-Colossus-Service-Key': scoped, 'Content-Type': 'application/json' }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+  assert.equal((await call(undefined)).status, 200);
+  const release = { id: 'lab-grounding', version: '1.0.0', name: 'Grounding research', providerId, model: 'deployed-grounding-1', maxTokens: 8000, evaluationUrl: 'https://research.example/evaluations/grounding-1' };
+  const responses = await Promise.all([call(release), call(release)]); assert.deepEqual(responses.map(response => response.status).sort(), [200, 201]);
+  const registered = (await responses[0].json()).model; assert.equal(registered.id, 'lab-grounding:1.0.0'); assert.equal(registered.enabled, false); assert.equal(registered.release.source, 'lab'); assert.equal(app.requests.length, 0);
+  assert.equal((await call({ ...release, model: 'different' })).status, 409);
+  assert.equal((await call({ ...release, version: '1.0.1', providerId: 'ungranted-provider' })).status, 403);
+  await assert.rejects(app.control.save('models', { id: registered.id, model: 'changed' }, actor), { code: 'release_immutable' });
+  await app.control.save('models', { id: registered.id, enabled: true, pricing: prices }, actor);
+  await app.control.save('groups', { id: 'published', name: 'Published research', memberIds: [actor.id], modelIds: [registered.id] }, actor);
+  const runtime = await app.control.issueKey({ name: 'Workflow research', systemId: 'workflow', allowedModels: [registered.id] }, actor);
+  const inference = await fetch(app.base + '/v1/chat/completions', { method: 'POST', headers: { Authorization: 'Bearer admin-token', 'X-Colossus-Service-Key': runtime.oneTimeKey, 'Content-Type': 'application/json' }, body: JSON.stringify({ model: 'astra-default', messages: [{ role: 'user', content: 'Research question' }] }) });
+  assert.equal(inference.status, 200); assert.equal(JSON.parse(app.requests[0].options.body).model, release.model);
+  app.users.set('Bearer lab-admin', { id: actor.id, app_metadata: { role: 'admin', lab: { enabled: true, role: 'reader' } } });
+  assert.equal((await call(release)).status, 403);
+  assert.equal((await call(release, key.oneTimeKey)).status, 403);
+  await app.control.revokeKey(key.key.id, actor); assert.equal((await call(release)).status, 401);
+});
+
+test('live organization reads use the Workspace database and fail closed on revoked membership or database failure', async () => {
+  let disabled = false, offline = false; const urls = [];
+  const fetcher = async url => {
+    urls.push(String(url));
+    if (String(url).includes('metadata.google.internal')) return Response.json({ access_token: 'synthetic-runtime', expires_in: 3600 });
+    if (offline) return Response.json({}, { status: 503 });
+    if (String(url).endsWith('/workspaceMembers/user-one')) return Response.json({ fields: { orgId: { stringValue: 'acme' }, status: { stringValue: disabled ? 'disabled' : 'active' } } });
+    return Response.json({ fields: { status: { stringValue: 'active' } } });
+  };
+  const store = new ControlStore({ ...configuration(settings), controlDatabase: 'control', workspaceDatabase: 'workspace' }, fetcher);
+  assert.equal(await store.organizationFor('user-one'), 'acme'); assert(urls.some(url => url.includes('/databases/workspace/documents/workspaceMembers/')));
+  disabled = true; await assert.rejects(store.organizationFor('user-one'), { code: 'organization_denied' });
+  disabled = false; offline = true; await assert.rejects(store.organizationFor('user-one'), { code: 'control_unavailable' });
 });

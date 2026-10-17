@@ -42,7 +42,7 @@ test('over-budget inputs stop before generation; rejected model content retains 
  assert.equal(mediaUsage({promptTokenCount:10,totalTokenCount:15}).complete,false);
 });
 test('media HTTP route authenticates before inference and exposes configured capability without credentials',async t=>{
- const config=configuration({ASTRA_PROVIDER_CONFIG_JSON:JSON.stringify({key:'synthetic-key',model:'test-model'}),COLOSSUS_MEDIA_PROJECT:'astra-via',COLOSSUS_MEDIA_MODEL:'gemini-3.1-flash-lite'});
+ const config=configuration({COLOSSUS_REQUIRE_GROUPS:'false',ASTRA_PROVIDER_CONFIG_JSON:JSON.stringify({key:'synthetic-key',model:'test-model'}),COLOSSUS_MEDIA_PROJECT:'astra-via',COLOSSUS_MEDIA_MODEL:'gemini-3.1-flash-lite'});
  let calls=0;const service=createService(config,{fetcher:async()=>{calls++;throw Error('unexpected');},logger:()=>{}});
  await new Promise(r=>service.server.listen(0,'127.0.0.1',r));t.after(()=>{service.server.closeAllConnections();service.server.close();});
  const url='http://127.0.0.1:'+service.server.address().port;
@@ -51,7 +51,7 @@ test('media HTTP route authenticates before inference and exposes configured cap
 });
 test('account media calls require the Enigma server credential as well as the protected analyst identity',async t=>{
  const gatewayKey='synthetic-enigma-gateway-credential-00000001';let role='participant',providerCalls=0;
- const config=configuration({ASTRA_PROVIDER_CONFIG_JSON:JSON.stringify({key:'synthetic-key',model:'test-model'}),SUPABASE_URL:'https://accounts.example.invalid',SUPABASE_ANON_KEY:'synthetic-public',COLOSSUS_MEDIA_PROJECT:'astra-via',COLOSSUS_MEDIA_MODEL:'gemini-3.1-flash-lite',COLOSSUS_MEDIA_INGEST_KEY:gatewayKey});
+ const config=configuration({COLOSSUS_REQUIRE_GROUPS:'false',ASTRA_PROVIDER_CONFIG_JSON:JSON.stringify({key:'synthetic-key',model:'test-model'}),SUPABASE_URL:'https://accounts.example.invalid',SUPABASE_ANON_KEY:'synthetic-public',COLOSSUS_MEDIA_PROJECT:'astra-via',COLOSSUS_MEDIA_MODEL:'gemini-3.1-flash-lite',COLOSSUS_MEDIA_INGEST_KEY:gatewayKey});
  const service=createService(config,{logger:()=>{},fetcher:async url=>{
   if(String(url).includes('/auth/v1/user'))return Response.json({id:'11111111-1111-4111-8111-111111111111',app_metadata:{role}});
   if(String(url).startsWith('http://metadata.'))return Response.json({access_token:'synthetic-runtime',expires_in:3600});
@@ -66,7 +66,7 @@ test('account media calls require the Enigma server credential as well as the pr
 });
 
 test('native media retains system grants, paused routes and atomic spending admission before generation',async t=>{
- const config=configuration({ASTRA_PROVIDER_CONFIG_JSON:JSON.stringify({key:'synthetic-key',model:'test-model'}),COLOSSUS_MEDIA_PROJECT:'astra-via',COLOSSUS_MEDIA_MODEL:'gemini-3.1-flash-lite'});
+ const config=configuration({COLOSSUS_REQUIRE_GROUPS:'false',ASTRA_PROVIDER_CONFIG_JSON:JSON.stringify({key:'synthetic-key',model:'test-model'}),COLOSSUS_MEDIA_PROJECT:'astra-via',COLOSSUS_MEDIA_MODEL:'gemini-3.1-flash-lite'});
  let generated=0;
  const app=createService(config,{logger:()=>{},fetcher:async url=>{
   if(String(url).startsWith('http://metadata.'))return Response.json({access_token:'synthetic-runtime',expires_in:3600});
@@ -76,9 +76,9 @@ test('native media retains system grants, paused routes and atomic spending admi
  await new Promise(r=>app.server.listen(0,'127.0.0.1',r));t.after(()=>{app.server.closeAllConnections();app.server.close();});
  const actor={id:'admin',email:'admin@example.com'},base='http://127.0.0.1:'+app.server.address().port;
  const call=key=>fetch(base+'/v1/media/observe',{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify(sample())});
- const denied=await app.control.issueKey({name:'Text only',systemId:'enigma',allowedModels:['astra-default']},actor);
+ const denied=await app.control.issueKey({name:'Text only',systemId:'enigma',requireGroup:false,allowedModels:['astra-default']},actor);
  assert.equal((await call(denied.oneTimeKey)).status,403);assert.equal(generated,0);
- const granted=await app.control.issueKey({name:'Media backend',systemId:'enigma',allowedModels:['broadcast-media']},actor);
+ const granted=await app.control.issueKey({name:'Media backend',systemId:'enigma',requireGroup:false,allowedModels:['broadcast-media']},actor);
  await app.control.save('systems',{id:'enigma',name:'Enigma',monthlyBudgetUsd:0.0001},actor);
  assert.equal((await call(granted.oneTimeKey)).status,402);assert.equal(generated,0);
  await app.control.save('systems',{id:'enigma',name:'Enigma',monthlyBudgetUsd:0.01},actor);

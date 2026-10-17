@@ -25,6 +25,23 @@ export class ControlStore {
     try { return { data: JSON.parse(value.fields.json.stringValue), version: value.updateTime }; }
     catch { fail(503, 'control_invalid', 'An operations record could not be read.'); }
   }
+  // Membership is owned by Workspace. Read its live records; never accept an org from a caller.
+  async organizationFor(userId) {
+    if (!/^[a-zA-Z0-9_-]{1,120}$/.test(userId)) fail(403, 'organization_denied', 'A verified account is required.');
+    const read = async path => {
+      if (!this.shared) return (await this.get(path)).data;
+      const root = `projects/${this.config.controlProject}/databases/${this.config.workspaceDatabase}/documents`;
+      const document = await this.request(`${root}/${path}`);
+      if (!document) return null;
+      return Object.fromEntries(Object.entries(document.fields || {}).map(([name, field]) => [name, field.stringValue]));
+    };
+    const member = await read('workspaceMembers/' + userId);
+    if (!member) return null;
+    if (member.status !== 'active' || !/^[a-zA-Z0-9_-]{1,120}$/.test(member.orgId || '')) fail(403, 'organization_denied', 'Your organization membership is inactive.');
+    const organization = await read('workspaceOrganizations/' + member.orgId);
+    if (organization?.status !== 'active') fail(403, 'organization_denied', 'Your organization is inactive.');
+    return member.orgId;
+  }
   async list(collection, limit = 500, allowMore = false) {
     if (!this.shared) return [...this.memory.entries()].filter(([path]) => path.startsWith(collection + '/') && path.split('/').length === 2)
       .sort(([a], [b]) => a.localeCompare(b)).slice(0, limit).map(([, value]) => structuredClone(value.data));

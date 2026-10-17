@@ -98,7 +98,7 @@ export class UsageMonitor {
     await this.request(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(record) });
   }
   async start(identity, requestId, operation) {
-    const record = { schemaVersion: 1, requestId, operation,
+    const record = { schemaVersion: 1, requestId, operation, groupId: identity.groupId || null, organizationId: identity.organizationId || null, activity: identity.activity || '',
       systemId: identity.systemId || (identity.kind === 'account' ? 'shared' : 'legacy'), keyId: identity.keyId || null,
       actor: identity.kind === 'account' ? { kind: 'account', id: identity.id, email: identity.email } : { kind: 'service', id: identity.id, email: '' },
       startedAt: new Date(this.now()).toISOString(), completedAt: null, durationMs: 0, status: 'running', calls: [] };

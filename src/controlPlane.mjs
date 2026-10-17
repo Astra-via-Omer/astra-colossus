@@ -1,7 +1,7 @@
 import { createHash, randomBytes, randomUUID, createCipheriv, createDecipheriv } from 'node:crypto';
 import { ControlStore } from './controlStore.mjs';
 import { endpointUrl } from './endpoints.mjs';
-import { fail, resolveRoute } from './config.mjs';
+import { fail, resolveRoute, validateChat } from './config.mjs';
 
 const idPattern = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,119}$/;
 const id = value => { if (typeof value !== 'string' || !idPattern.test(value)) fail(400, 'invalid_id', 'Use a short ID containing letters, numbers, dots, underscores or hyphens.'); return value; };
@@ -80,6 +80,7 @@ export class ControlPlane {
   }
   async save(collection, body, actor) {
     await this.ensure();
+    if (collection === 'groups') return this.saveGroup(body, actor);
     if (!['providers', 'models', 'systems', 'integrations', 'jobs'].includes(collection)) fail(404, 'not_found', 'Unknown registry.');
     const recordId = id(body.id), path = collection + '/' + recordId;
     const previous = (await this.store.get(path)).data;
@@ -102,6 +103,8 @@ export class ControlPlane {
         allowAnonymous: ['gpu', 'compatible'].includes(kind) && (body.allowAnonymous ?? previous?.allowAnonymous ?? false),
         health: body.apiKey || body.baseUrl !== undefined ? null : previous?.health || null };
     } else if (collection === 'models') {
+      if (previous?.release && ['providerId', 'model', 'task', 'capabilities', 'maxTokens'].some(key => Object.hasOwn(body, key) && JSON.stringify(body[key]) !== JSON.stringify(previous[key])))
+        fail(409, 'release_immutable', 'Publish a new Lab version to change its serving definition.');
       const providerId = id(body.providerId ?? previous?.providerId), provider = (await this.store.get('providers/' + providerId)).data;
       if (!provider || provider.native) fail(400, 'provider_required', 'Choose a compatible or Anthropic connection. Native adapters use their dedicated model route.');
       const capabilities = body.capabilities ?? previous?.capabilities ?? ['text'];
@@ -112,7 +115,7 @@ export class ControlPlane {
       const task = body.task ?? previous?.task ?? 'chat';
       if (!['chat', 'embedding'].includes(task) || (task === 'embedding' && provider.protocol === 'anthropic')) fail(400, 'invalid_task', 'This provider supports chat; compatible routes can also serve embeddings.');
       value = { ...base, providerId, model: text(body.model ?? previous?.model, 200), capabilities: [...new Set(capabilities)], task, maxTokens,
-        pricing: this.pricing(Object.hasOwn(body, 'pricing') ? body.pricing : previous?.pricing) };
+        pricing: this.pricing(Object.hasOwn(body, 'pricing') ? body.pricing : previous?.pricing), ...(previous?.release ? { release: previous.release } : {}) };
     } else if (collection === 'systems') {
       const budget = Object.hasOwn(body, 'monthlyBudgetUsd') ? body.monthlyBudgetUsd : previous?.monthlyBudgetUsd ?? null;
       const rpm = body.requestsPerMinute ?? previous?.requestsPerMinute ?? 120;
@@ -152,6 +155,104 @@ export class ControlPlane {
     });
     return publicRecord(value);
   }
+  async saveGroup(body, actor) {
+    const groupId = id(body.id), path = 'groups/' + groupId, previous = (await this.store.get(path)).data;
+    if (!previous && (await this.store.list('groups')).length >= 250) fail(409, 'registry_limit', 'This registry is limited to 250 groups.');
+    if (body.expectedUpdatedAt && previous?.updatedAt !== body.expectedUpdatedAt) fail(409, 'control_conflict', 'This group changed. Refresh before saving.');
+    const members = body.memberIds ?? previous?.memberIds ?? [], models = body.modelIds ?? previous?.modelIds ?? [];
+    if (!Array.isArray(members) || members.length > 100 || members.some(value => typeof value !== 'string' || !/^[a-zA-Z0-9_-]{1,120}$/.test(value)) ||
+        !Array.isArray(models) || !models.length || models.length > 100) fail(400, 'invalid_group', 'Choose 1–100 model routes and up to 100 verified account IDs.');
+    const modelIds = [...new Set(models.map(id))], memberIds = [...new Set(members)];
+    for (const alias of modelIds) if (!(await this.store.get('models/' + alias)).data) fail(400, 'unknown_model', 'Choose registered model routes.');
+    const activityModels = body.activityModels ?? previous?.activityModels ?? {};
+    if (!activityModels || typeof activityModels !== 'object' || Array.isArray(activityModels) || Object.keys(activityModels).length > 50 ||
+        Object.entries(activityModels).some(([activity, alias]) => !/^[a-z][a-z0-9._:-]{0,119}$/.test(activity) || !modelIds.includes(alias)))
+      fail(400, 'invalid_activity_models', 'Activity assignments must use models granted to the group.');
+    const organizationId = Object.hasOwn(body, 'organizationId') ? body.organizationId : previous?.organizationId ?? null;
+    if (organizationId !== null && !/^[a-zA-Z0-9_-]{1,120}$/.test(organizationId)) fail(400, 'invalid_organization', 'Choose an approved Workspace organization ID.');
+    const value = { id: groupId, name: text(body.name ?? previous?.name), enabled: body.enabled ?? previous?.enabled ?? true,
+      modelIds, memberIds, organizationId, activityModels, createdAt: previous?.createdAt || now(), updatedAt: now() };
+    if (typeof value.enabled !== 'boolean') fail(400, 'invalid_state', 'Supply a boolean enabled state.');
+    await this.audit(actor, previous ? 'update_requested' : 'create_requested', 'groups', groupId);
+    const affected = [...new Set([...(previous?.memberIds || []), ...memberIds])];
+    await this.store.mutate([path, ...affected.map(userId => 'groupMembers/' + userId)], ([current, ...assignments]) => {
+      if ((current?.updatedAt || null) !== (previous?.updatedAt || null)) fail(409, 'control_conflict', 'This group changed. Refresh before saving.');
+      return [value, ...affected.map((userId, index) => {
+        if (memberIds.includes(userId) && assignments[index]?.groupId && assignments[index].groupId !== groupId)
+          fail(409, 'group_conflict', 'An account already belongs to another group. Remove its previous assignment first.');
+        return { userId, groupId: memberIds.includes(userId) ? groupId : null, updatedAt: now() };
+      })];
+    });
+    return value;
+  }
+  async groupAccess(identity, enforce = true) {
+    if (!this.enabled) {
+      if (enforce && (identity.requireGroup || (identity.kind === 'account' && this.config.requireGroups))) fail(503, 'control_setup', 'Configure the Colossus group registry before inference.');
+      return { group: null, organizationId: null };
+    }
+    await this.ensure();
+    const assignment = identity.kind === 'account' ? (await this.store.get('groupMembers/' + identity.id)).data : null;
+    const group = assignment?.groupId ? (await this.store.get('groups/' + assignment.groupId)).data : null;
+    if (assignment?.groupId && !group?.enabled) fail(403, 'group_paused', 'Your model group is paused or unavailable.');
+    if (enforce && (identity.requireGroup || (identity.kind === 'account' && this.config.requireGroups)) && !group) fail(409, 'group_required', 'An administrator must assign this account to a Colossus model group.');
+    const organizationId = identity.kind === 'account' && (identity.keyId || group?.organizationId) ? await this.store.organizationFor(identity.id) : null;
+    if (group?.organizationId && group.organizationId !== organizationId) fail(403, 'organization_denied', 'This group requires active membership in its approved organization.');
+    if (identity.organizationIds?.length && !identity.organizationIds.includes(organizationId)) fail(403, 'organization_denied', 'This system key does not grant your organization.');
+    return { group, organizationId };
+  }
+  async assignedRoute(identity, body, task = 'chat', activity = '') {
+    const { group, organizationId } = await this.groupAccess(identity);
+    if (!group) { const route = await this.route(body.model); return { ...route, routing: { groupId: null, organizationId, activity } }; }
+    // The client cannot choose outside (or override) its centrally assigned group.
+    const specific = group.activityModels[activity] || group.activityModels[activity.split('.').slice(0, -1).join('.')];
+    const candidates = specific ? [specific] : group.modelIds;
+    for (const alias of candidates) {
+      if (identity.allowedModels && !identity.allowedModels.includes(alias)) continue;
+      let route;
+      try { route = await this.route(alias); } catch (error) { if (['route_paused', 'model_task'].includes(error.code)) continue; throw error; }
+      if ((route.task || 'chat') !== task || (body.max_tokens && body.max_tokens > route.maxTokens)) continue;
+      if (task === 'chat') { try { validateChat(body, route); } catch (error) { if (error.code === 'unsupported_modality') continue; throw error; } }
+      return { ...route, routing: { groupId: group.id, organizationId, activity } };
+    }
+    fail(503, 'group_model_unavailable', 'No granted model in your group can serve this request. Ask an administrator to check its routes, output limits and system key grants.');
+  }
+  async labCatalog(identity) {
+    await this.ensure();
+    if (identity.kind !== 'account' || !identity.admin || identity.systemId !== 'lab' || !identity.registrationProviderIds?.length)
+      fail(403, 'lab_registration_denied', 'Lab registration requires an administrator and a scoped Lab registration key.');
+    const organizationId = await this.store.organizationFor(identity.id);
+    if (identity.organizationIds?.length && !identity.organizationIds.includes(organizationId)) fail(403, 'organization_denied', 'This Lab key does not grant your organization.');
+    const providers = (await this.store.list('providers')).filter(provider => provider.enabled && !provider.native && identity.registrationProviderIds.includes(provider.id));
+    const models = (await this.store.list('models')).filter(model => model.release?.source === 'lab' && model.release.organizationId === organizationId);
+    return { organizationId, providers: providers.map(provider => ({ id: provider.id, name: provider.name })), models };
+  }
+  async registerLabModel(body, identity) {
+    const catalog = await this.labCatalog(identity);
+    if (!catalog.providers.some(provider => provider.id === body.providerId)) fail(403, 'provider_not_granted', 'This Lab key does not grant that provider connection.');
+    if (typeof body.id !== 'string' || !/^[a-z][a-z0-9-]{0,63}$/.test(body.id) || typeof body.version !== 'string' || !/^\d{1,6}\.\d{1,6}\.\d{1,6}$/.test(body.version))
+      fail(400, 'invalid_release', 'Supply a lowercase model ID and a numeric major.minor.patch version.');
+    const alias = body.id + ':' + body.version;
+    const definition = { providerId: body.providerId, model: text(body.model, 200), name: text(body.name), task: 'chat', capabilities: ['text'], maxTokens: body.maxTokens ?? 8000,
+      evaluationUrl: endpointUrl(body.evaluationUrl).href, organizationId: catalog.organizationId };
+    const fingerprint = digest(JSON.stringify(definition)), existing = (await this.store.get('models/' + alias)).data;
+    if (existing) {
+      if (existing.release?.fingerprint !== fingerprint) fail(409, 'release_conflict', 'That version already exists with a different definition. Create a new version.');
+      return { model: existing, replay: true };
+    }
+    // Create-only CAS prevents concurrent publications from overwriting an immutable release.
+    if (!Number.isInteger(definition.maxTokens) || definition.maxTokens < 1 || definition.maxTokens > 65536) fail(400, 'invalid_tokens', 'Choose an output limit from 1 to 65,536 tokens.');
+    if ((await this.store.list('models')).length >= 250) fail(409, 'registry_limit', 'This registry is limited to 250 models.');
+    const release = { source: 'lab', version: body.version, evaluationUrl: definition.evaluationUrl, organizationId: catalog.organizationId, publishedBy: identity.id, fingerprint };
+    const model = { id: alias, name: definition.name, providerId: definition.providerId, model: definition.model, task: definition.task, capabilities: definition.capabilities,
+      maxTokens: definition.maxTokens, enabled: false, pricing: null, release, createdAt: now(), updatedAt: now() };
+    await this.audit(identity, 'lab_release_requested', 'models', alias);
+    if (!await this.store.commit([{ path: 'models/' + alias, data: model, version: null }])) {
+      const concurrent = (await this.store.get('models/' + alias)).data;
+      if (concurrent?.release?.fingerprint === fingerprint) return { model: concurrent, replay: true };
+      fail(409, 'release_conflict', 'That version was published concurrently. Refresh the registry.');
+    }
+    return { model, replay: false };
+  }
   async route(model) {
     if (!this.enabled) return resolveRoute(this.config, model);
     await this.ensure();
@@ -172,8 +273,10 @@ export class ControlPlane {
   async routes(identity) {
     if (!this.enabled) return Object.entries(this.config.routes).map(([id, route]) => ({ id, model: route.model, capabilities: route.capabilities, task: 'chat' }));
     await this.ensure();
+    const { group } = identity.admin ? { group: null } : await this.groupAccess(identity, false);
+    if (this.config.requireGroups && identity.kind === 'account' && !identity.admin && !group) return [];
     const [models, providers] = await Promise.all([this.store.list('models'), this.store.list('providers')]);
-    return models.filter(model => model.enabled && (!identity.allowedModels || identity.allowedModels.includes(model.id)) && providers.some(provider => provider.id === model.providerId && provider.enabled && (provider.credential || provider.envAlias || provider.allowAnonymous || provider.native)))
+    return models.filter(model => (!group || group.modelIds.includes(model.id)) && model.enabled && (!identity.allowedModels || identity.allowedModels.includes(model.id)) && providers.some(provider => provider.id === model.providerId && provider.enabled && (provider.credential || provider.envAlias || provider.allowAnonymous || provider.native)))
       .map(model => ({ id: model.id, model: model.model, capabilities: model.capabilities, task: model.task, providerId: model.providerId }));
   }
   async authenticateKey(token) {
@@ -182,7 +285,8 @@ export class ControlPlane {
     if (!key || !key.enabled || !Number.isFinite(Date.parse(key.expiresAt)) || Date.parse(key.expiresAt) <= Date.now()) fail(401, 'service_key_revoked', 'This service key is invalid, expired or revoked.');
     const system = (await this.store.get('systems/' + key.systemId)).data;
     if (!system?.enabled) fail(403, 'system_paused', 'This system is paused in Colossus.');
-    return { kind: 'service', admin: false, id: key.id, keyId: key.id, systemId: key.systemId, allowedModels: key.allowedModels };
+    return { kind: 'service', admin: false, id: key.id, keyId: key.id, systemId: key.systemId, allowedModels: key.allowedModels,
+      requireGroup: key.requireGroup === true, organizationIds: key.organizationIds || [], registrationProviderIds: key.registrationProviderIds || [] };
   }
   async issueKey(body, actor) {
     await this.ensure(); const systemId = id(body.systemId), system = (await this.store.get('systems/' + systemId)).data;
@@ -190,11 +294,18 @@ export class ControlPlane {
     if (!Array.isArray(body.allowedModels) || !body.allowedModels.length || body.allowedModels.length > 100) fail(400, 'models_required', 'Select at least one model route for this key.');
     const allowedModels = [...new Set(body.allowedModels.map(id))];
     for (const alias of allowedModels) if (!(await this.store.get('models/' + alias)).data) fail(400, 'unknown_model', 'Choose registered model routes.');
+    const registrationProviderIds = body.registrationProviderIds ?? [], organizationIds = body.organizationIds ?? [];
+    if (!Array.isArray(registrationProviderIds) || registrationProviderIds.length > 100 || !Array.isArray(organizationIds) || organizationIds.length > 100 ||
+        organizationIds.some(value => typeof value !== 'string' || !/^[a-zA-Z0-9_-]{1,120}$/.test(value)) ||
+        (body.requireGroup !== undefined && typeof body.requireGroup !== 'boolean')) fail(400, 'invalid_key_scope', 'Supply valid provider, organization and group scopes.');
+    if (registrationProviderIds.length && systemId !== 'lab') fail(400, 'invalid_key_scope', 'Only Lab keys can register model releases.');
+    for (const providerId of registrationProviderIds) if (!(await this.store.get('providers/' + id(providerId))).data) fail(400, 'provider_required', 'Choose registered provider connections.');
     const days = body.expiresInDays ?? 90;
     if (!Number.isInteger(days) || days < 1 || days > 365) fail(400, 'invalid_expiry', 'Choose a key lifetime from 1 to 365 days.');
     if ((await this.store.list('keys')).length >= 250) fail(409, 'key_limit', 'This registry is limited to 250 keys.');
     const token = 'cs_' + randomBytes(32).toString('hex'), hash = digest(token);
-    const record = { id: randomUUID(), name: text(body.name), systemId, allowedModels, enabled: true, prefix: token.slice(0, 11) + '…' + token.slice(-4), createdAt: now(), expiresAt: new Date(Date.now() + days * 86400000).toISOString() };
+    const record = { id: randomUUID(), name: text(body.name), systemId, allowedModels, requireGroup: body.requireGroup ?? true,
+      registrationProviderIds: [...new Set(registrationProviderIds)], organizationIds: [...new Set(organizationIds)], enabled: true, prefix: token.slice(0, 11) + '…' + token.slice(-4), createdAt: now(), expiresAt: new Date(Date.now() + days * 86400000).toISOString() };
     await this.audit(actor, 'issue_requested', 'keys', record.id);
     if (!await this.store.commit([{ path: 'keys/' + hash, data: { ...record, hash }, version: null }])) fail(409, 'key_conflict', 'The key could not be registered. Retry creation.');
     return { key: record, oneTimeKey: token };
@@ -210,6 +321,8 @@ export class ControlPlane {
     if (identity.allowedModels && !identity.allowedModels.includes(alias)) fail(403, 'model_not_granted', 'This system key is not allowed to use this model route.');
   }
   async mediaRoute(identity) {
+    const { group } = await this.groupAccess(identity);
+    if (group && !group.modelIds.includes('broadcast-media')) fail(403, 'model_not_granted', 'Your group is not assigned the broadcast observation model.');
     await this.authorize(identity, 'broadcast-media');
     if (this.enabled) {
       await this.ensure();
@@ -311,10 +424,10 @@ export class ControlPlane {
   }
   async snapshot() {
     await this.ensure();
-    const [providers, models, systems, keys, integrations, jobs, wallets, audit] = await Promise.all(['providers', 'models', 'systems', 'keys', 'integrations', 'jobs', 'wallets'].map(name => this.store.list(name)).concat(this.store.list('audit', 50, true)));
+    const [providers, models, systems, keys, integrations, jobs, wallets, groups, audit] = await Promise.all(['providers', 'models', 'systems', 'keys', 'integrations', 'jobs', 'wallets', 'groups'].map(name => this.store.list(name)).concat(this.store.list('audit', 50, true)));
     const month = now().slice(0, 7);
     return { storage: this.store.shared ? 'firestore' : 'preview_memory', generatedAt: now(), providers: providers.map(publicRecord), models,
       systems: systems.map(system => ({ ...system, spending: wallets.find(wallet => wallet.systemId === system.id && wallet.month === month) || null })),
-      keys: keys.map(publicRecord), integrations: integrations.map(publicRecord), jobs, audit, gateway: { origin: this.config.origin, legacyKeys: this.config.keys.length, protocols: ['openai-chat', 'anthropic-messages-adapter', 'openai-embeddings'], adminOnly: true } };
+      keys: keys.map(publicRecord), integrations: integrations.map(publicRecord), jobs, groups, audit, gateway: { origin: this.config.origin, legacyKeys: this.config.keys.length, protocols: ['openai-chat', 'anthropic-messages-adapter', 'openai-embeddings'], adminOnly: true } };
   }
 }

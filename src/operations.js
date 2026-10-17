@@ -2,7 +2,7 @@
   const byId = id => document.getElementById(id);
   let catalog, usage, verified = false, refreshInFlight = false, editor, confirmation, selectedView = 'overview';
   const discovered = new Map();
-  const titles = { overview: 'Overview', models: 'Models', providers: 'Providers', systems: 'Astra systems', keys: 'API access', processes: 'Processes', analytics: 'Costs & usage', integrations: 'Integrations', engines: 'Engine studio', access: 'Users & access', guide: 'Documentation' };
+  const titles = { overview: 'Overview', models: 'Models', groups: 'User groups', providers: 'Providers', systems: 'Astra systems', keys: 'API access', processes: 'Processes', analytics: 'Costs & usage', integrations: 'Integrations', engines: 'Engine studio', access: 'Users & access', guide: 'Documentation' };
   const aliases = { monitoring: 'analytics', 'user-access': 'access', guide: 'guide', room: 'engines' };
   const names = { chat: 'Chat inference', embedding: 'Embedding', run_engine: 'Engine run', test_engine: 'Draft test', evaluate: 'Evaluation', observe_media: 'Broadcast observation' };
   const count = value => value === null || value === undefined ? 'Unavailable' : new Intl.NumberFormat().format(value);
@@ -80,6 +80,14 @@
     byId('overview-audit').replaceChildren(...catalog.audit.slice(0, 4).map(entry => { const element = node('div', 'audit-entry'); element.append(node('strong', '', `${entry.action.replaceAll('_', ' ')} · ${entry.recordId}`), node('small', '', `${entry.actor} · ${stamp(entry.at)}`)); return element; }));
     if (!catalog.audit.length) byId('overview-audit').append(empty('Configuration changes and key operations will be recorded here.'));
   }
+  function renderGroups() {
+    if (!catalog) return;
+    const rows = (catalog.groups || []).map(group => {
+      const row = node('tr');
+      row.append(cell(identityCell(group.name, group.id)), cell(group.memberIds.join(', ') || 'No accounts assigned'), cell(group.modelIds.join(' → ')), cell(group.organizationId || 'Personal accounts'), cell(statusBadge(group.enabled ? 'enabled' : 'paused')), actionCell([['Configure', () => openEditor('groups', group)], [group.enabled ? 'Pause' : 'Enable', () => toggle('groups', group)]])); return row;
+    });
+    byId('ops-group-rows').replaceChildren(...rows); emptyRow(byId('ops-group-rows'), 6, 'Create a group, assign account IDs and choose its models.');
+  }
   function renderModels() {
     if (!catalog) return;
     const query = byId('models-search').value.toLowerCase();
@@ -137,7 +145,7 @@
     byId('ops-integration-cards').replaceChildren(...catalog.integrations.map(integration => connectionCard(integration, 'integrations')));
     if (!catalog.integrations.length) byId('ops-integration-cards').append(empty('Register your first data API, bucket location or training controller.'));
   }
-  function renderAll() { renderOverview(); renderModels(); renderProviders(); renderSystems(); renderKeys(); renderProcesses(); renderIntegrations();
+  function renderAll() { renderGroups(); renderOverview(); renderModels(); renderProviders(); renderSystems(); renderKeys(); renderProcesses(); renderIntegrations();
     if (catalog) document.dispatchEvent(new CustomEvent('colossus:catalog', { detail: catalog.models.filter(model => model.enabled && catalog.providers.some(provider => provider.id === model.providerId && provider.enabled && (provider.credentialConfigured || provider.allowAnonymous))) }));
   }
   async function refresh() {
@@ -180,7 +188,7 @@
   function openEditor(collection, record, preset) {
     if (!catalog || !verified) { notice('Wait for the operations registry to load.', true); return; }
     editor = { collection, record, preset }; byId('ops-editor-fields').replaceChildren(); byId('ops-editor-error').textContent = ''; byId('ops-editor-save').disabled = false;
-    byId('ops-editor-title').textContent = collection === 'keys' ? 'Issue a system key' : `${record ? 'Configure' : 'Register'} ${({ providers: 'provider connection', models: 'model route', systems: 'Astra system', integrations: 'integration', jobs: 'external job' })[collection]}`;
+    byId('ops-editor-title').textContent = collection === 'keys' ? 'Issue a system key' : `${record ? 'Configure' : 'Register'} ${({ providers: 'provider connection', models: 'model route', systems: 'Astra system', integrations: 'integration', jobs: 'external job', groups: 'user group' })[collection]}`;
     byId('ops-editor-kicker').textContent = record ? 'CONTROL PLANE / EDIT' : 'CONTROL PLANE / NEW CONNECTION';
     const providerKind = typeof preset === 'string' ? preset : record?.kind || 'openai';
     field('name', 'Name', record?.name || (collection === 'providers' ? presets[providerKind][0] : ''), { required: true });
@@ -209,6 +217,12 @@
       field('outputRate', 'Output · USD / 1M tokens', record?.pricing?.outputPerMillion, { type: 'number', min: 0, max: 1000000 });
       field('cachedRate', 'Cached input · USD / 1M tokens', record?.pricing?.cachedInputPerMillion, { type: 'number', min: 0, max: 1000000, wide: true, note: 'Use your provider’s verified rates. Leave all prices blank to keep cost unavailable.' });
       byId('ops-editor-note').textContent = 'The alias remains stable for calling applications.';
+    } else if (collection === 'groups') {
+      const members = field('memberIds', 'Account IDs · one per line', (record?.memberIds || []).join('\n'), { wide: true, textarea: true, note: 'Copy verified account IDs from Users & access. Each account belongs to one group.' }); members.maxLength = 12500;
+      const models = field('modelIds', 'Model aliases · one per line, in selection order', (record?.modelIds || []).join('\n'), { wide: true, textarea: true, required: true, note: 'Colossus chooses the first enabled, compatible route also granted by the calling system key.' }); models.maxLength = 12500;
+      field('organizationId', 'Approved Workspace organization ID (optional)', record?.organizationId || '', { wide: true });
+      const activity = field('activityModels', 'Optional activity assignments · JSON object', JSON.stringify(record?.activityModels || {}, null, 2), { wide: true, textarea: true, note: 'Example: {"workflow.analysis":"astra-default"}. Values must belong to this group.' }); activity.maxLength = 12000;
+      byId('ops-editor-note').textContent = 'Calling applications cannot override group selection. Pause blocks new inference; removing an account removes its assignment.';
     } else if (collection === 'systems') {
       field('url', 'System URL (optional)', record?.url || '', { wide: true, placeholder: 'https://your-system.astra-via.com' });
       field('monthlyBudgetUsd', 'Monthly spending cap · USD', record?.monthlyBudgetUsd, { type: 'number', min: 0, max: 10000000, placeholder: 'Unlimited' });
@@ -218,7 +232,10 @@
       field('systemId', 'Calling system', preset?.systemId || '', { required: true, choices: [['', 'Select a system'], ...catalog.systems.filter(value => value.enabled).map(value => [value.id, value.name])] });
       field('expiresInDays', 'Key lifetime', '90', { choices: [['30', '30 days'], ['90', '90 days'], ['365', '365 days']] });
       checkboxes('allowedModels', 'Model grants · select at least one', catalog.models.map(value => [value.id, value.name + ' · ' + value.id]), []);
-      byId('ops-editor-note').textContent = 'The key will be shown once. Keep it on the backend.';
+      checkboxes('groupPolicy', 'User group enforcement', [['required', 'Require a verified account assigned to a Colossus group']], ['required']);
+      const organizations = field('organizationIds', 'Organization restrictions · one ID per line (optional)', '', { wide: true, textarea: true }); organizations.maxLength = 12500;
+      checkboxes('registrationProviderIds', 'Lab release registration · Lab keys only', catalog.providers.filter(value => !value.native).map(value => [value.id, value.name]), []);
+      byId('ops-editor-note').textContent = 'The key will be shown once. Keep it on the backend. For machine-only integrations, clear group enforcement explicitly.';
     } else if (collection === 'integrations') {
       field('kind', 'Connection type', record?.kind || 'rest', { choices: [['rest', 'HTTP data API'], ['gcs', 'Google Cloud Storage'], ['s3', 'S3 storage'], ['training', 'External training controller']] });
       field('systemId', 'Owning system', record?.systemId || 'lab', { choices: catalog.systems.map(value => [value.id, value.name]) });
@@ -258,7 +275,8 @@
         delete body.inputRate; delete body.outputRate; delete body.cachedRate;
       }
       if (collection === 'systems') { body.monthlyBudgetUsd = body.monthlyBudgetUsd === '' ? null : Number(body.monthlyBudgetUsd); body.requestsPerMinute = Number(body.requestsPerMinute); }
-      if (collection === 'keys') { body.allowedModels = data.getAll('allowedModels'); body.expiresInDays = Number(body.expiresInDays); }
+      if (collection === 'keys') { body.allowedModels = data.getAll('allowedModels'); body.expiresInDays = Number(body.expiresInDays); body.requireGroup = data.getAll('groupPolicy').includes('required'); delete body.groupPolicy; body.registrationProviderIds = data.getAll('registrationProviderIds'); body.organizationIds = String(body.organizationIds || '').split(/\s+/).filter(Boolean); }
+      if (collection === 'groups') { for (const key of ['memberIds', 'modelIds']) body[key] = String(body[key] || '').split(/\s+/).filter(Boolean); body.organizationId = body.organizationId || null; body.activityModels = JSON.parse(body.activityModels || '{}'); }
       if (collection === 'jobs') body.reportedCostUsd = body.reportedCostUsd === '' ? null : Number(body.reportedCostUsd);
       if (collection === 'integrations' && !body.apiKey) delete body.apiKey;
       const result = await api('/v1/control/' + collection, body, editor.record ? 'PATCH' : 'POST');
@@ -276,7 +294,7 @@
   function inspectProcess(process) {
     const container = byId('ops-process-detail-body'); container.replaceChildren();
     const summary = node('div', 'process-detail-summary');
-    for (const [label, value] of [['Request', process.requestId], ['State', process.status], ['System', systemName(process.systemId)], ['Account', process.actor.email || process.actor.id], ['Started', stamp(process.startedAt)], ['Duration', time(process.durationMs)]]) { const block = node('div'); block.append(node('small', '', label), node('strong', '', value)); summary.append(block); } container.append(summary);
+    for (const [label, value] of [['Request', process.requestId], ['State', process.status], ['System', systemName(process.systemId)], ['Group', process.groupId || 'Unassigned'], ['Organization', process.organizationId || 'Personal'], ['Activity', process.activity || process.operation], ['Account', process.actor.email || process.actor.id], ['Started', stamp(process.startedAt)], ['Duration', time(process.durationMs)]]) { const block = node('div'); block.append(node('small', '', label), node('strong', '', value)); summary.append(block); } container.append(summary);
     if (process.errorCode) container.append(node('p', '', 'Outcome: ' + process.errorCode));
     for (const call of process.calls) {
       const article = node('article', 'process-call'); article.append(node('h3', '', `${call.index}. ${call.route} · ${call.providerModel}`), statusBadge(call.status));
@@ -296,7 +314,7 @@
   byId('models-search').addEventListener('input', renderModels); byId('process-search').addEventListener('input', renderProcesses); byId('process-state').addEventListener('change', renderProcesses);
   document.addEventListener('colossus:ready', () => { verified = true; void refresh(); });
   document.addEventListener('colossus:usage', event => { if (event.detail.days === 1 && !event.detail.userId) { usage = event.detail; renderOverview(); renderModels(); renderProcesses(); } });
-  document.addEventListener('colossus:locked', () => { verified = false; catalog = undefined; usage = undefined; discovered.clear(); clearKey(); byId('ops-editor-fields').replaceChildren(); byId('ops-process-detail-body').replaceChildren(); editor = null; confirmation = null; for (const id of ['overview-models', 'overview-calls', 'overview-tokens', 'overview-cost']) byId(id).textContent = '—'; for (const dialog of document.querySelectorAll('.ops-dialog[open]')) dialog.close(); for (const id of ['ops-model-rows', 'ops-key-rows', 'ops-process-rows', 'ops-provider-cards', 'ops-system-cards', 'ops-integration-cards', 'ops-external-jobs', 'overview-audit', 'overview-processes', 'overview-providers', 'ecosystem-nodes']) byId(id).replaceChildren(); byId('ops-account').textContent = 'Access verification required'; byId('ops-storage').textContent = 'Actions paused'; });
+  document.addEventListener('colossus:locked', () => { verified = false; catalog = undefined; usage = undefined; discovered.clear(); clearKey(); byId('ops-editor-fields').replaceChildren(); byId('ops-process-detail-body').replaceChildren(); editor = null; confirmation = null; for (const id of ['overview-models', 'overview-calls', 'overview-tokens', 'overview-cost']) byId(id).textContent = '—'; for (const dialog of document.querySelectorAll('.ops-dialog[open]')) dialog.close(); for (const id of ['ops-model-rows', 'ops-group-rows', 'ops-key-rows', 'ops-process-rows', 'ops-provider-cards', 'ops-system-cards', 'ops-integration-cards', 'ops-external-jobs', 'overview-audit', 'overview-processes', 'overview-providers', 'ecosystem-nodes']) byId(id).replaceChildren(); byId('ops-account').textContent = 'Access verification required'; byId('ops-storage').textContent = 'Actions paused'; });
   const timer = setInterval(() => { if (document.visibilityState === 'visible') void refresh(); }, 30000);
   window.addEventListener('pagehide', () => { clearInterval(timer); clearKey(); });
 })();
