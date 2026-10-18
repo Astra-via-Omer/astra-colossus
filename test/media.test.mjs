@@ -51,8 +51,10 @@ test('media HTTP route authenticates before inference and exposes configured cap
 });
 test('account media calls require the Enigma server credential as well as the protected analyst identity',async t=>{
  const gatewayKey='synthetic-enigma-gateway-credential-00000001';let role='participant',providerCalls=0;
- const config=configuration({COLOSSUS_REQUIRE_GROUPS:'false',ASTRA_PROVIDER_CONFIG_JSON:JSON.stringify({key:'synthetic-key',model:'test-model'}),SUPABASE_URL:'https://accounts.example.invalid',SUPABASE_ANON_KEY:'synthetic-public',COLOSSUS_MEDIA_PROJECT:'astra-via',COLOSSUS_MEDIA_MODEL:'gemini-3.1-flash-lite',COLOSSUS_MEDIA_INGEST_KEY:gatewayKey});
- const service=createService(config,{logger:()=>{},fetcher:async url=>{
+ const config=configuration({COLOSSUS_REQUIRE_GROUPS:'false',ASTRA_PROVIDER_CONFIG_JSON:JSON.stringify({key:'synthetic-key',model:'test-model'}),SUPABASE_URL:'https://accounts.example.invalid',SUPABASE_ANON_KEY:'synthetic-public',SUPABASE_SERVICE_ROLE_KEY:'credit-server-key',COLOSSUS_MEDIA_PROJECT:'astra-via',COLOSSUS_MEDIA_MODEL:'gemini-3.1-flash-lite',COLOSSUS_MEDIA_INGEST_KEY:gatewayKey});
+ const service=createService(config,{logger:()=>{},fetcher:async (url,options)=>{
+  if(String(url).includes('/rpc/astra_admit_model_request')){const args=JSON.parse(options.body);return Response.json({id:args.p_computation||args.p_request,owned:!args.p_computation});}
+  if(String(url).includes('/rpc/astra_finish_model_request'))return Response.json(null);
   if(String(url).includes('/auth/v1/user'))return Response.json({id:'11111111-1111-4111-8111-111111111111',app_metadata:{role}});
   if(String(url).startsWith('http://metadata.'))return Response.json({access_token:'synthetic-runtime',expires_in:3600});
   providerCalls++;return Response.json({totalTokens:6001});
@@ -66,16 +68,18 @@ test('account media calls require the Enigma server credential as well as the pr
 });
 
 test('native media retains system grants, paused routes and atomic spending admission before generation',async t=>{
- const config=configuration({COLOSSUS_REQUIRE_GROUPS:'false',ASTRA_PROVIDER_CONFIG_JSON:JSON.stringify({key:'synthetic-key',model:'test-model'}),COLOSSUS_MEDIA_PROJECT:'astra-via',COLOSSUS_MEDIA_MODEL:'gemini-3.1-flash-lite'});
+ const config=configuration({COLOSSUS_REQUIRE_GROUPS:'false',SUPABASE_URL:'https://accounts.example.invalid',SUPABASE_ANON_KEY:'public',SUPABASE_SERVICE_ROLE_KEY:'credits',COLOSSUS_MEDIA_INGEST_KEY:'synthetic-media-gateway-credential-00000001',ASTRA_PROVIDER_CONFIG_JSON:JSON.stringify({key:'synthetic-key',model:'test-model'}),COLOSSUS_MEDIA_PROJECT:'astra-via',COLOSSUS_MEDIA_MODEL:'gemini-3.1-flash-lite'});
  let generated=0;
- const app=createService(config,{logger:()=>{},fetcher:async url=>{
+ const app=createService(config,{logger:()=>{},fetcher:async (url,options)=>{
+  if(String(url).includes('/auth/v1/user'))return Response.json({id:'11111111-1111-4111-8111-111111111111',app_metadata:{role:'participant'}});
+  if(String(url).includes('/rpc/astra_admit_model_request')){const args=JSON.parse(options.body);return Response.json({id:args.p_computation||args.p_request,owned:!args.p_computation});}
   if(String(url).startsWith('http://metadata.'))return Response.json({access_token:'synthetic-runtime',expires_in:3600});
   if(String(url).endsWith(':countTokens'))return Response.json({totalTokens:500});
   generated++;return Response.json({candidates:[{finishReason:'STOP',content:{parts:[{text:JSON.stringify(observation)}]}}],usageMetadata:{promptTokenCount:100,candidatesTokenCount:30,thoughtsTokenCount:5,totalTokenCount:135,promptTokensDetails:[{modality:'AUDIO',tokenCount:100}]}});
  }});
  await new Promise(r=>app.server.listen(0,'127.0.0.1',r));t.after(()=>{app.server.closeAllConnections();app.server.close();});
  const actor={id:'admin',email:'admin@example.com'},base='http://127.0.0.1:'+app.server.address().port;
- const call=key=>fetch(base+'/v1/media/observe',{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify(sample())});
+ const call=key=>fetch(base+'/v1/media/observe',{method:'POST',headers:{Authorization:'Bearer account-token','X-Colossus-Service-Key':key,'X-Astra-Computation-Id':'33333333-3333-4333-8333-333333333333','X-Enigma-Media-Key':'synthetic-media-gateway-credential-00000001','Content-Type':'application/json'},body:JSON.stringify(sample())});
  const denied=await app.control.issueKey({name:'Text only',systemId:'enigma',requireGroup:false,allowedModels:['astra-default']},actor);
  assert.equal((await call(denied.oneTimeKey)).status,403);assert.equal(generated,0);
  const granted=await app.control.issueKey({name:'Media backend',systemId:'enigma',requireGroup:false,allowedModels:['broadcast-media']},actor);

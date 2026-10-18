@@ -15,6 +15,7 @@ import { providerRequest, providerResult, AnthropicStream } from './providerAdap
 import { MediaObserver, mediaCostUsd } from './media.mjs';
 import { accountDisplay, DisplayError } from './account-display.mjs';
 import { validDisplayPreferences } from './display-contract.mjs';
+import { Credits } from './credits.mjs';
 
 async function boundedJson(stream, limit, upstream = false) {
   const chunks = []; let size = 0;
@@ -31,6 +32,7 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
   const sessions = new Sessions(config, fetcher);
   const monitoring = new UsageMonitor(config, fetcher);
   const media = new MediaObserver(config.media, fetcher);
+  const credits = new Credits(config, fetcher);
   const control = new ControlPlane(config, fetcher, endpointFetcher, controlStore), activeControllers = new Map();
   let inflight = 0, controlInflight = 0, draining = false;
   const json = (res, body, status = 200) => {
@@ -123,6 +125,7 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
     }
     if (request.stream) request.stream_options = { ...request.stream_options, include_usage: true };
     const prepared = providerRequest(route, request, task);
+    await credits.check(process.creditAdmission);
     const reservation = await control.reserve(identity, route, request, process.requestId, process.calls.length + 1);
     const call = monitoring.call(process, route, engine);
     Object.assign(call, route.routing || {});
@@ -138,6 +141,9 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
       const code = { 401: 'provider_key_rejected', 402: 'provider_credits_required', 429: 'provider_busy' }[response.status] || 'provider_error';
       fail([402, 429].includes(response.status) ? response.status : 502, code, 'The provider could not complete this request.');
     }
+    // A streamed response can be consumed before the connection is cancelled.
+    // Keep the accepted provider response visible to credit settlement.
+    call.httpStatus = response.status;
     return { response, route, call };
   }
   async function runEngine(engine, input, signal, process, identity) {
@@ -151,9 +157,13 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
   }
   const server = http.createServer(async (req, res) => {
     const requestId = randomUUID(), started = Date.now();
-    let operation = 'request', admitted = false, timer, process, cancellationTimer, errorCode;
+    let operation = 'request', admitted = false, timer, process, cancellationTimer, errorCode, creditAdmission;
     const controller = new AbortController();
     async function finishProcess(status, errorCode) {
+      // Settle credits independently of monitoring availability. An uncertain
+      // settlement retains its hold and is never refunded by another product.
+      try { await credits.finish(creditAdmission, process, status); }
+      catch { logger({ service: 'colossus', requestId, operation: 'credit_settlement_failed', code: 'credits_unavailable' }); }
       try {
         await monitoring.finish(process, status, errorCode);
         if (process) {
@@ -317,7 +327,10 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
         }
         const access = await control.groupAccess(identity);
         identity.groupId = access.group?.id || null; identity.organizationId = access.organizationId;
+        creditAdmission = await credits.admit(identity, requestId, req.headers['x-astra-computation-id']);
         process = await monitoring.start(identity, requestId, operation);
+        // Keep authorization and bearer tokens out of persisted usage records.
+        Object.defineProperty(process, 'creditAdmission', { value: creditAdmission });
         await control.startProcess(process); activeControllers.set(requestId, controller);
         if (control.enabled) {
           let checking = false;
@@ -338,6 +351,7 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
         let call;
         const route = config.media ? await control.mediaRoute(identity) : null;
         const result=await media.observe(body,controller.signal,async bounds=>{
+          await credits.check(creditAdmission);
           const reservation = await control.reserve(identity, route, { max_tokens: bounds.maxOutputTokens }, process.requestId, process.calls.length + 1, bounds.inputTokens);
           call=monitoring.call(process,{alias:'broadcast-media',model:config.media.model}, {id:'broadcast-observation',version:'1.0.0'});
           call.reservation = reservation; call.providerId = route.providerId;

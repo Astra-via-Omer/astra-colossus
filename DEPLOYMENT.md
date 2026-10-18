@@ -91,3 +91,11 @@ The Colossus workflow configures the Google project, `global` location and `gemi
 The updated provisioning script additionally grants `roles/datastore.viewer`, conditioned on the Workspace database, so Colossus can read current organization approvals. Pass `--workspace-database` if its name differs from `astra-workspace`. The runtime receives no Workspace encryption key and no write permission there. Re-run provisioning before enabling group organization restrictions or scoped account calls. Configure groups through the browser administrator console; account inference requires a group by default, while the console remains available to set up the first group.
 
 Deploy Colossus first, configure groups and scoped Workflow/Lab keys, then deploy those callers with their separate backend secrets. Keep the existing upstream provider secret in Colossus. Group-based selection is effective only after these deployments and assignments; source tests do not update live infrastructure.
+
+## Mandatory account credit admission
+
+Before deploying this gateway version, apply `database/007_model_credit_admission.sql` from the Personal Workspace repository after its client-computations migration. Deploy the Workspace and Enigma updates that forward `X-Astra-Computation-Id` first. The existing `SUPABASE_SERVICE_ROLE_KEY` must be available to the gateway. No new account model request starts when the ledger cannot be verified.
+
+Workflow and Enigma calls require an active, owned reservation for the matching product. A zero remaining balance is valid only for an already prepaid computation. Direct Colossus/Lab/Evidence account inference reserves one shared analysis charge per gateway request; settings, history and Lab model registration are uncharged. Product-scoped keys require user identity for inference.
+
+Successful/partial output settles credits, including a cancelled stream whose provider response was already accepted. Confirmed failures release credits; uncertain provider or settlement responses retain holds. Reconcile these against Colossus monitoring using the request UUID (also the computation ID). Workspace recovery must be upgraded before gateway admission so it never refunds Colossus, Lab or Evidence holds. Deploy clients and recovery first, the SQL function second, and the gateway last.
