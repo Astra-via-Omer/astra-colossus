@@ -15,7 +15,7 @@ The `production` environment permits only branch `main`. The federation provider
 - Provider secret: `astra-provider-config:1`, retained here for upstream credentials. Workflow now uses its separate scoped-key secret `astra-workflow-colossus`. Never stored in GitHub or the image.
 - Vault secret: `astra-colossus-vault:1`, dedicated to encrypting administrator-supplied connection credentials.
 - Operations database: Firestore Native `astra-colossus`, `me-west1`, with deletion protection.
-- Account backend: the existing shared Supabase project URL and publishable key, without its service-role credential.
+- Account backend: the existing shared Supabase project URL and publishable key. Credit admission additionally requires the server-only `astra-supabase-service-role` secret; grant its Secret Manager accessor role only to the Colossus runtime identity and pin `SUPABASE_ADMIN_SECRET_VERSION` (defaults to version 1).
 
 The deployment identity has Cloud Run Developer, writer on `astra-images`, and Service Account User on the Colossus runtime identity. The runtime identity has access to the existing provider secret, the dedicated vault secret, read/create access on its private engine bucket, and Datastore User scoped by an IAM condition to the dedicated `astra-colossus` database.
 

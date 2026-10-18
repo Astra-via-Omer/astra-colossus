@@ -21,7 +21,7 @@ test('all account inference fails closed on rejected, unavailable or malformed c
  }
  const missing = new Credits({},()=>{throw Error('Should not call');});
  await assert.rejects(missing.admit(identity,randomUUID(),randomUUID()),error=>error.status===503);
- for (const systemId of ['workflow','enigma','lab']) await assert.rejects(missing.admit({kind:'service',systemId},randomUUID()),error=>error.code==='account_required');
+ for (const systemId of ['workflow','enigma','lab','evidence']) await assert.rejects(missing.admit({kind:'service',systemId},randomUUID()),error=>error.code==='account_required');
  await assert.rejects(missing.admit(identity,randomUUID(),'forged'),error=>error.status===409);
 });
 
@@ -68,4 +68,14 @@ test('gateway-owned requests reserve once, recheck before model calls, and settl
  state.failProvider=true;
  assert.equal((await call('/v1/chat/completions',body)).status,502);
  assert.equal(state.settlements[1].p_status,'failed');
+});
+
+test('cancelled streams settle delivered output; uncertain provider responses retain their credit hold',async()=>{
+ const calls=[];const credits=new Credits({},async()=>{});credits.rpc=async(name,args)=>{calls.push({name,args});};
+ const admission={owned:true,owner:identity.id,id:randomUUID()};
+ const usage={totalTokens:null,complete:false},cost={usd:null,complete:false};
+ await credits.finish(admission,{calls:[{status:'cancelled',httpStatus:200,usage,cost}]},'cancelled');
+ assert.equal(calls[0].args.p_status,'partial');assert.equal(calls[0].args.p_usage.totalTokens,null);
+ await assert.rejects(credits.finish(admission,{calls:[{status:'failed',usage,cost}]},'failed'),error=>error.code==='credit_settlement_pending');
+ assert.equal(calls.length,1,'Uncertain calls never trigger an automatic refund');
 });
