@@ -15,6 +15,12 @@ export class ControlStore {
     catch { fail(503, 'control_unavailable', 'The operations database is unavailable.'); }
     if (response.status === 404) return null;
     if ([409, 412].includes(response.status)) return { conflict: true };
+    // Firestore returns HTTP 400 when another writer changes the updateTime
+    // precondition. Reread the records before rebuilding this conditional commit.
+    if (response.status === 400 && path === `${this.root}:commit`) {
+      const data = await response.clone().json().catch(() => null);
+      if (data?.error?.status === 'FAILED_PRECONDITION') return { conflict: true };
+    }
     if (!response.ok) fail(503, 'control_unavailable', 'The operations database is unavailable.');
     return response.json();
   }
