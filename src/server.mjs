@@ -15,6 +15,8 @@ import { providerRequest, providerResult, AnthropicStream } from './providerAdap
 import { MediaObserver, mediaCostUsd } from './media.mjs';
 import { accountDisplay, DisplayError } from './account-display.mjs';
 import { validDisplayPreferences } from './display-contract.mjs';
+import { Credits } from './credits.mjs';
+import { hasActiveEntitlement } from './entitlement.mjs';
 
 async function boundedJson(stream, limit, upstream = false) {
   const chunks = []; let size = 0;
@@ -31,6 +33,7 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
   const sessions = new Sessions(config, fetcher);
   const monitoring = new UsageMonitor(config, fetcher);
   const media = new MediaObserver(config.media, fetcher);
+  const credits = new Credits(config, fetcher);
   const control = new ControlPlane(config, fetcher, endpointFetcher, controlStore), activeControllers = new Map();
   let inflight = 0, controlInflight = 0, draining = false;
   const json = (res, body, status = 200) => {
@@ -58,10 +61,11 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
         assignment?.enabled === false || (user.app_metadata?.system_access && user.app_metadata.system_access[callingSystem] !== true) ||
         (callingSystem === 'workflow' && (user.app_metadata?.workspace_scope === 'workflow' || user.app_metadata?.workspace_approved === false)) ||
         !['admin', 'participant', 'reader', 'viewer'].includes(role)) fail(403, 'access_denied', 'This account cannot access Colossus.');
+    if (!hasActiveEntitlement(user.app_metadata)) fail(403, 'entitlement_inactive', 'Your trial or subscription has expired, is paused, or has not been configured.');
     const name = user.user_metadata?.full_name || user.user_metadata?.name;
     return { kind: 'account', admin: role === 'admin', role, id: user.id,
       email: typeof user.email === 'string' ? user.email.slice(0, 254) : '',
-      name: typeof name === 'string' ? name.slice(0, 80) : '', token };
+      name: typeof name === 'string' ? name.slice(0, 80) : '', token, planExpiresAt: Date.parse(user.app_metadata.astra_entitlement.expiresAt) };
   }
   const sessionId = req => /(?:^|;\s*)colossus_session=([^;]+)/.exec(req.headers.cookie || '')?.[1];
   function requireConsoleAdmin(identity) {
@@ -73,7 +77,8 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
     const id = sessionId(req);
     if (!id) fail(401, 'unauthorized', 'Sign in with your Astra account.');
     const session = await sessions.get(id);
-    return { ...requireConsoleAdmin(await userFor(session.token)), expiresAt: session.expiresAt };
+    const identity = requireConsoleAdmin(await userFor(session.token));
+    return { ...identity, expiresAt: Math.min(session.expiresAt, identity.planExpiresAt) };
   }
   const hasRegistry = () => !!(config.engineBucket || (config.serviceKey && config.supabaseUrl) || (config.engineFile && !config.production));
   const profile = identity => ({ user: { id: identity.id, email: identity.email, name: identity.name, role: identity.role },
@@ -123,6 +128,7 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
     }
     if (request.stream) request.stream_options = { ...request.stream_options, include_usage: true };
     const prepared = providerRequest(route, request, task);
+    await credits.check(process.creditAdmission);
     const reservation = await control.reserve(identity, route, request, process.requestId, process.calls.length + 1);
     const call = monitoring.call(process, route, engine);
     Object.assign(call, route.routing || {});
@@ -138,6 +144,9 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
       const code = { 401: 'provider_key_rejected', 402: 'provider_credits_required', 429: 'provider_busy' }[response.status] || 'provider_error';
       fail([402, 429].includes(response.status) ? response.status : 502, code, 'The provider could not complete this request.');
     }
+    // A streamed response can be consumed before the connection is cancelled.
+    // Keep the accepted provider response visible to credit settlement.
+    call.httpStatus = response.status;
     return { response, route, call };
   }
   async function runEngine(engine, input, signal, process, identity) {
@@ -151,9 +160,13 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
   }
   const server = http.createServer(async (req, res) => {
     const requestId = randomUUID(), started = Date.now();
-    let operation = 'request', admitted = false, timer, process, cancellationTimer, errorCode;
+    let operation = 'request', admitted = false, timer, process, cancellationTimer, entitlementTimer, errorCode, creditAdmission;
     const controller = new AbortController();
     async function finishProcess(status, errorCode) {
+      // Settle credits independently of monitoring availability. An uncertain
+      // settlement retains its hold and is never refunded by another product.
+      try { await credits.finish(creditAdmission, process, status); }
+      catch { logger({ service: 'colossus', requestId, operation: 'credit_settlement_failed', code: 'credits_unavailable' }); }
       try {
         await monitoring.finish(process, status, errorCode);
         if (process) {
@@ -226,7 +239,7 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
         if (previous) await sessions.revoke(previous);
         const session = await sessions.create(data.access_token, data.expires_in ?? 3600);
         res.setHeader('Set-Cookie', cookie(session.id, session.seconds));
-        return json(res, { signedIn: true, ...profile({ ...identity, expiresAt: session.expiresAt }) });
+        return json(res, { signedIn: true, ...profile({ ...identity, expiresAt: Math.min(session.expiresAt, identity.planExpiresAt) }) });
       }
       if (method === 'DELETE' && url.pathname === '/session') {
         operation = 'sign_out'; checkOrigin(req); await sessions.revoke(sessionId(req));
@@ -310,6 +323,11 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
       const inferenceOperations = { '/v1/chat/completions': 'chat', '/v1/embeddings': 'embedding', '/v1/runs': 'run_engine', '/v1/engines/test': 'test_engine', '/v1/evaluations': 'evaluate', '/v1/media/observe': 'observe_media' };
       if (Object.hasOwn(inferenceOperations, url.pathname)) {
         operation = inferenceOperations[url.pathname];
+        if (identity.kind === 'account') {
+          const remaining = identity.planExpiresAt - Date.now();
+          if (remaining <= 0) fail(403, 'entitlement_inactive', 'Your trial or subscription has expired.');
+          if (remaining <= config.timeout) entitlementTimer = setTimeout(() => controller.abort('entitlement_expired'), remaining);
+        }
         if (['test_engine', 'evaluate'].includes(operation) && !identity.admin) fail(403, 'admin_required', 'Only admins can test or evaluate engines.');
         if (operation==='observe_media' && identity.kind==='account') {
           if(!['admin','participant'].includes(identity.role)) fail(403,'analyst_required','Audio/video observation requires an analyst account.');
@@ -317,7 +335,10 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
         }
         const access = await control.groupAccess(identity);
         identity.groupId = access.group?.id || null; identity.organizationId = access.organizationId;
+        creditAdmission = await credits.admit(identity, requestId, req.headers['x-astra-computation-id']);
         process = await monitoring.start(identity, requestId, operation);
+        // Keep authorization and bearer tokens out of persisted usage records.
+        Object.defineProperty(process, 'creditAdmission', { value: creditAdmission });
         await control.startProcess(process); activeControllers.set(requestId, controller);
         if (control.enabled) {
           let checking = false;
@@ -338,6 +359,7 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
         let call;
         const route = config.media ? await control.mediaRoute(identity) : null;
         const result=await media.observe(body,controller.signal,async bounds=>{
+          await credits.check(creditAdmission);
           const reservation = await control.reserve(identity, route, { max_tokens: bounds.maxOutputTokens }, process.requestId, process.calls.length + 1, bounds.inputTokens);
           call=monitoring.call(process,{alias:'broadcast-media',model:config.media.model}, {id:'broadcast-observation',version:'1.0.0'});
           call.reservation = reservation; call.providerId = route.providerId;
@@ -398,16 +420,16 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
       }
       fail(404, 'not_found', 'Unknown API route.');
     } catch (error) {
-      const cancelled = controller.signal.reason === 'admin_cancelled';
-      errorCode = cancelled ? 'admin_cancelled' : controller.signal.aborted ? 'request_timeout' : error instanceof ApiError ? error.code : 'service_error';
+      const cancelled = controller.signal.reason === 'admin_cancelled', expired = controller.signal.reason === 'entitlement_expired';
+      errorCode = expired ? 'entitlement_inactive' : cancelled ? 'admin_cancelled' : controller.signal.aborted ? 'request_timeout' : error instanceof ApiError ? error.code : 'service_error';
       await finishProcess(controller.signal.aborted ? 'cancelled' : 'failed', errorCode);
       if (!res.headersSent && !res.destroyed) {
         const timedOut = controller.signal.aborted;
-        json(res, { error: { code: cancelled ? 'admin_cancelled' : timedOut ? 'request_timeout' : error instanceof ApiError ? error.code : 'service_error',
-          message: cancelled ? 'An administrator cancelled this process.' : timedOut ? 'The request exceeded its processing window or was cancelled.' : error instanceof ApiError ? error.message : 'The request could not be completed.', requestId } }, cancelled ? 409 : timedOut ? 504 : error instanceof ApiError ? error.status : 500);
+        json(res, { error: { code: errorCode,
+          message: expired ? 'Your trial or subscription has expired.' : cancelled ? 'An administrator cancelled this process.' : timedOut ? 'The request exceeded its processing window or was cancelled.' : error instanceof ApiError ? error.message : 'The request could not be completed.', requestId } }, expired ? 403 : cancelled ? 409 : timedOut ? 504 : error instanceof ApiError ? error.status : 500);
       } else if (!res.writableFinished) res.destroy();
     } finally {
-      clearTimeout(timer); clearInterval(cancellationTimer); activeControllers.delete(requestId);
+      clearTimeout(timer); clearTimeout(entitlementTimer); clearInterval(cancellationTimer); activeControllers.delete(requestId);
       if (admitted === 'control') controlInflight--; else if (admitted) inflight--;
       if (operation !== 'health') logger({ service: 'colossus', requestId, operation, status: res.statusCode, durationMs: Date.now() - started, ...(errorCode ? { errorCode } : {}) });
     }

@@ -15,7 +15,7 @@ The `production` environment permits only branch `main`. The federation provider
 - Provider secret: `astra-provider-config:1`, retained here for upstream credentials. Workflow now uses its separate scoped-key secret `astra-workflow-colossus`. Never stored in GitHub or the image.
 - Vault secret: `astra-colossus-vault:1`, dedicated to encrypting administrator-supplied connection credentials.
 - Operations database: Firestore Native `astra-colossus`, `me-west1`, with deletion protection.
-- Account backend: the existing shared Supabase project URL and publishable key, without its service-role credential.
+- Account backend: the existing shared Supabase project URL and publishable key. Credit admission additionally requires the server-only `astra-supabase-service-role` secret; grant its Secret Manager accessor role only to the Colossus runtime identity and pin `SUPABASE_ADMIN_SECRET_VERSION` (defaults to version 1).
 
 The deployment identity has Cloud Run Developer, writer on `astra-images`, and Service Account User on the Colossus runtime identity. The runtime identity has access to the existing provider secret, the dedicated vault secret, read/create access on its private engine bucket, and Datastore User scoped by an IAM condition to the dedicated `astra-colossus` database.
 
@@ -90,4 +90,18 @@ The Colossus workflow configures the Google project, `global` location and `gemi
 
 The updated provisioning script additionally grants `roles/datastore.viewer`, conditioned on the Workspace database, so Colossus can read current organization approvals. Pass `--workspace-database` if its name differs from `astra-workspace`. The runtime receives no Workspace encryption key and no write permission there. Re-run provisioning before enabling group organization restrictions or scoped account calls. Configure groups through the browser administrator console; account inference requires a group by default, while the console remains available to set up the first group.
 
-Deploy Colossus first, configure groups and scoped Workflow/Lab keys, then deploy those callers with their separate backend secrets. Keep the existing upstream provider secret in Colossus. Group-based selection is effective only after these deployments and assignments; source tests do not update live infrastructure.
+Configure groups and scoped Workflow/Lab keys and follow the shared entitlement deployment order below. Keep the existing upstream provider secret in Colossus. Group-based selection is effective only after these deployments and assignments; source tests do not update live infrastructure.
+
+## Mandatory account credit admission
+
+Before deploying this gateway version, apply `database/007_model_credit_admission.sql` from the Personal Workspace repository after its client-computations migration. Deploy the Workspace and Enigma updates that forward `X-Astra-Computation-Id` first. The existing `SUPABASE_SERVICE_ROLE_KEY` must be available to the gateway. No new account model request starts when the ledger cannot be verified.
+
+Workflow and Enigma calls require an active, owned reservation for the matching product. A zero remaining balance is valid only for an already prepaid computation. Direct Colossus/Lab/Evidence account inference reserves one shared analysis charge per gateway request; settings, history and Lab model registration are uncharged. Product-scoped keys require user identity for inference.
+
+Successful/partial output settles credits, including a cancelled stream whose provider response was already accepted. Confirmed failures release credits; uncertain provider or settlement responses retain holds. Reconcile these against Colossus monitoring using the request UUID (also the computation ID). Workspace recovery must be upgraded before gateway admission so it never refunds Colossus, Lab or Evidence holds. Apply both shared entitlement migrations and configure verified end dates, then deploy clients and recovery, and deploy the gateway last.
+
+## Shared trial/subscription expiry
+
+This release requires a current protected `app_metadata.astra_entitlement` with version 1, plan kind `trial` or `subscription`, `enabled: true`, and a canonical UTC `expiresAt` in the future. All user access reads current Supabase Auth metadata; old sessions and editable profile metadata cannot grant a term. Roles and credits never bypass expiry. Workspace owns the updated `database/007_model_credit_admission.sql` and new `database/008_account_entitlements.sql`, the administration UI and audit history.
+
+Production currently has no stored term dates. Before deploying the strict gates, apply those migrations and configure the actual approved dates; do not infer or seed renewals. Then deploy Workspace, Enigma, Lab and Evidence before Colossus. Missing or expired plans are denied, including for administrators; only Workspace's dedicated plan-renewal control remains available to an otherwise verified full-scope administrator.

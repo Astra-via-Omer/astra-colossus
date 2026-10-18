@@ -14,7 +14,12 @@ const claim = { text: 'Capacity is 20 units.', quote: input.sources[0].text, sou
 const completion = claims => ({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify({ claims }) } }], usage: { total_tokens: 20 } });
 async function start(t, overrides = {}, fetcher = async () => Response.json(completion([claim]))) {
   const logs = [], config = configuration({ ...env, ...overrides });
-  const service = createService(config, { fetcher, logger: entry => logs.push(entry) });
+  const wrapped = async (url, options) => {
+    if (url.includes('/rpc/astra_admit_model_request')) { const args=JSON.parse(options.body);return Response.json({id:args.p_computation || args.p_request,owned:!args.p_computation}); }
+    if (url.includes('/rpc/astra_finish_model_request')) return Response.json(null);
+    return fetcher(url, options);
+  };
+  const service = createService(config, { fetcher: wrapped, logger: entry => logs.push(entry) });
   await new Promise(resolve => service.server.listen(0, '127.0.0.1', resolve));
   t.after(() => new Promise(resolve => { service.server.close(resolve); service.server.closeAllConnections(); }));
   const base = `http://127.0.0.1:${service.server.address().port}`;
@@ -90,7 +95,7 @@ test('shared Supabase registry supports multiple instances without local state',
 test('blocks revoked accounts and cookie mutations from other origins', async t => {
   let disabled = false;
   const { call, base } = await start(t, { SUPABASE_URL: 'https://auth.example', SUPABASE_ANON_KEY: 'public-key' }, async url => {
-    if (url.endsWith('/auth/v1/user')) return Response.json({ id: '11111111-1111-1111-1111-111111111111', app_metadata: { role: 'participant', disabled } });
+    if (url.endsWith('/auth/v1/user')) return Response.json({ id: '11111111-1111-1111-1111-111111111111', app_metadata: {astra_entitlement: {version:1,kind:'subscription',enabled:true,expiresAt:'2099-12-31T00:00:00.000Z'},  role: 'participant', disabled } });
     return Response.json(completion([claim]));
   });
   assert.equal((await call('/v1/models', undefined, 'account-token')).status, 200);

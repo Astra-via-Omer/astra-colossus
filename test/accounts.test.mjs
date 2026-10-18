@@ -8,7 +8,7 @@ const origin = 'http://localhost:4003';
 const settings = { COLOSSUS_REQUIRE_GROUPS: 'false', ASTRA_PROVIDER_CONFIG_JSON: '{"key":"synthetic-machine-key","model":"synthetic-model"}', SUPABASE_URL: 'https://auth.example', SUPABASE_ANON_KEY: 'public-test-key', COLOSSUS_ORIGIN: origin };
 const adminId = '11111111-1111-1111-1111-111111111111', otherId = '22222222-2222-2222-2222-222222222222';
 async function start(t, extra = {}) {
-  const user = { id: adminId, email: 'admin@example.com', app_metadata: { role: 'admin' }, user_metadata: { name: 'Test admin' } };
+  const user = { id: adminId, email: 'admin@example.com', app_metadata: {astra_entitlement: {version:1,kind:'subscription',enabled:true,expiresAt:'2099-12-31T00:00:00.000Z'},  role: 'admin' }, user_metadata: { name: 'Test admin' } };
   const state = { user, authStatus: 200, tokenStatus: 200, rpcStatus: 200, calls: [], password: 'synthetic-password' };
   const cloudFetch = cloud(new Map());
   const fetcher = async (url, options = {}) => {
@@ -109,7 +109,7 @@ test('logout, replacement login and server expiry prevent cookie replay', async 
 test('live protected roles, disabled state and assignment determine permissions on every request', async t => {
   const app = await start(t), { cookie } = await app.login();
   for (const role of ['participant', 'reader', 'viewer']) {
-    app.state.user.app_metadata = { role }; app.state.user.user_metadata = { role: 'admin' };
+    app.state.user.app_metadata = {astra_entitlement: {version:1,kind:'subscription',enabled:true,expiresAt:'2099-12-31T00:00:00.000Z'},  role }; app.state.user.user_metadata = { role: 'admin' };
     assert.equal((await app.call('/session', cookie)).status, 403);
     assert.equal((await app.call('/app', cookie)).status, 303);
     const login = await app.call('/session', undefined, 'POST', { email: 'admin@example.com', password: app.state.password });
@@ -124,7 +124,7 @@ test('live protected roles, disabled state and assignment determine permissions 
     assert.equal((await app.call('/v1/models', cookie)).status, 403);
     const room = await app.call('/app', cookie); assert.equal(room.status, 303); assert.equal(room.headers.get('location'), '/?access=denied');
   }
-  app.state.user.app_metadata = { role: 'admin' }; app.state.user.banned_until = '2099-01-01';
+  app.state.user.app_metadata = {astra_entitlement: {version:1,kind:'subscription',enabled:true,expiresAt:'2099-12-31T00:00:00.000Z'},  role: 'admin' }; app.state.user.banned_until = '2099-01-01';
   assert.equal((await app.call('/session', cookie)).status, 403); delete app.state.user.banned_until;
   app.state.user.deleted_at = new Date().toISOString(); assert.equal((await app.call('/session', cookie)).status, 403);
 });
@@ -209,4 +209,14 @@ test('encrypted shared sessions work across instances and revoke replay; tamperi
   second.fetch = async () => { throw Error('private-upstream-detail'); };
   await assert.rejects(second.get(tampered.id), { status: 503 });
   await assert.rejects(second.revoke(tampered.id), { status: 503 });
+});
+
+test('trial/subscription expiry revokes an existing browser and bearer session without an admin bypass',async t=>{
+ const app=await start(t),{cookie}=await app.login();
+ assert.equal((await app.call('/session',cookie)).status,200);
+ app.state.user.app_metadata.astra_entitlement.expiresAt='2020-01-01T00:00:00.000Z';
+ app.state.user.user_metadata.astra_entitlement={version:1,kind:'subscription',enabled:true,expiresAt:'2099-01-01T00:00:00.000Z'};
+ for(const [path,method,body,headers] of [['/session','GET'],['/v1/chat/completions','POST',{messages:[{role:'user',content:'hello'}]}],['/v1/models','GET',undefined,{Authorization:'Bearer synthetic-account-token'}]]) {
+  const response=await app.call(path,cookie,method,body,headers);assert.equal(response.status,403);assert.equal((await response.json()).error.code,'entitlement_inactive');
+ }
 });

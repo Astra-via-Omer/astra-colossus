@@ -10,22 +10,24 @@ import { providerRequest, providerResult, AnthropicStream } from '../src/provide
 import { endpointUrl, publicAddress } from '../src/endpoints.mjs';
 import { tokenUsage, tokenCost } from '../src/usage.mjs';
 
-const settings = { COLOSSUS_REQUIRE_GROUPS: 'false', ASTRA_PROVIDER_CONFIG_JSON: '{"key":"managed-private-key","model":"synthetic-model"}', SUPABASE_URL: 'https://auth.example', SUPABASE_ANON_KEY: 'public-key', COLOSSUS_ORIGIN: 'http://localhost:4002', COLOSSUS_VAULT_SECRET: 'synthetic-stable-vault-secret-of-32-characters' };
+const settings = { COLOSSUS_REQUIRE_GROUPS: 'false', ASTRA_PROVIDER_CONFIG_JSON: '{"key":"managed-private-key","model":"synthetic-model"}', SUPABASE_URL: 'https://auth.example', SUPABASE_ANON_KEY: 'public-key', SUPABASE_SERVICE_ROLE_KEY: 'credit-server-key', COLOSSUS_ORIGIN: 'http://localhost:4002', COLOSSUS_VAULT_SECRET: 'synthetic-stable-vault-secret-of-32-characters' };
 const actor = { kind: 'account', id: '11111111-1111-1111-1111-111111111111', email: 'admin@example.com', admin: true };
 const prices = { inputPerMillion: 2, cachedInputPerMillion: 2, outputPerMillion: 4 };
 function plane() { const config = configuration(settings), store = new ControlStore(config, fetch), control = new ControlPlane(config, fetch, fetch, store); return { config, store, control }; }
 async function service(t, provider, extra = {}) {
   const logs = [], requests = [], users = new Map();
   const fetcher = async (url, options = {}) => {
+    if (url.includes('/rest/v1/rpc/astra_admit_model_request')) { const args = JSON.parse(options.body); return Response.json({id:args.p_computation || args.p_request,owned:!args.p_computation}); }
+    if (url.includes('/rest/v1/rpc/astra_finish_model_request')) return Response.json(null);
     if (url.endsWith('/auth/v1/user') && users.has(options.headers.Authorization)) return Response.json(users.get(options.headers.Authorization));
-    if (url.endsWith('/auth/v1/user')) return Response.json({ id: actor.id, email: actor.email, app_metadata: { role: options.headers.Authorization === 'Bearer admin-token' ? 'admin' : 'participant' } });
+    if (url.endsWith('/auth/v1/user')) return Response.json({ id: actor.id, email: actor.email, app_metadata: {astra_entitlement: {version:1,kind:'subscription',enabled:true,expiresAt:'2099-12-31T00:00:00.000Z'},  role: options.headers.Authorization === 'Bearer admin-token' ? 'admin' : 'participant' } });
     requests.push({ url, options }); return provider ? provider(url, options) : Response.json({ choices: [{ message: { content: 'response' }, finish_reason: 'stop' }], usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } });
   };
   const app = createService(configuration({ ...settings, ...extra }), { fetcher, logger: value => logs.push(value) });
   await new Promise(resolve => app.server.listen(0, '127.0.0.1', resolve));
   t.after(() => new Promise(resolve => { app.server.close(resolve); app.server.closeAllConnections(); }));
   const session = await app.sessions.create('admin-token'), base = 'http://127.0.0.1:' + app.server.address().port;
-  const call = (path, body, token, method = body === undefined ? 'GET' : 'POST') => fetch(base + path, { method, headers: { ...(token ? { Authorization: 'Bearer ' + token } : { Cookie: 'colossus_session=' + session.id, Origin: settings.COLOSSUS_ORIGIN }), ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}) }, ...(body !== undefined ? { body: JSON.stringify(body) } : {}) });
+  const call = (path, body, token, method = body === undefined ? 'GET' : 'POST') => fetch(base + path, { method, headers: { ...(token?.startsWith('cs_') ? { Authorization: 'Bearer account-token', 'X-Colossus-Service-Key': token, 'X-Astra-Computation-Id': '33333333-3333-4333-8333-333333333333' } : token ? { Authorization: 'Bearer ' + token } : { Cookie: 'colossus_session=' + session.id, Origin: settings.COLOSSUS_ORIGIN }), ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}) }, ...(body !== undefined ? { body: JSON.stringify(body) } : {}) });
   return { ...app, logs, requests, users, call, base };
 }
 
@@ -59,7 +61,7 @@ test('system keys show once, enforce model grants and expiry, revoke immediately
   const usage = await (await app.call('/v1/monitoring')).json(); assert(usage.processes.some(process => process.systemId === 'enigma' && process.keyId === issued.key.id));
   const wallet = (await (await app.call('/v1/control')).json()).systems.find(system => system.id === 'enigma').spending;
   assert.equal(wallet.tokens, 15); assert(wallet.spentUsd > 0); assert.equal(wallet.reservedUsd, 0);
-  const attributed = await fetch(app.base + '/v1/chat/completions', { method: 'POST', headers: { Authorization: 'Bearer account-token', 'X-Colossus-Service-Key': issued.oneTimeKey, 'Content-Type': 'application/json' }, body: JSON.stringify({ model: 'astra-fast', messages: [{ role: 'user', content: 'account-scoped request' }] }) });
+  const attributed = await fetch(app.base + '/v1/chat/completions', { method: 'POST', headers: { Authorization: 'Bearer account-token', 'X-Colossus-Service-Key': issued.oneTimeKey, 'X-Astra-Computation-Id': '33333333-3333-4333-8333-333333333333', 'Content-Type': 'application/json' }, body: JSON.stringify({ model: 'astra-fast', messages: [{ role: 'user', content: 'account-scoped request' }] }) });
   assert.equal(attributed.status, 200);
   assert((await (await app.call('/v1/monitoring')).json()).processes.some(process => process.actor.kind === 'account' && process.systemId === 'enigma'));
   assert(!JSON.stringify(app.logs).includes('private user prompt')); assert(!JSON.stringify(app.logs).includes(issued.oneTimeKey));
@@ -174,11 +176,11 @@ test('Colossus chooses group models centrally, validates organization membership
   const app = await service(t, undefined, { COLOSSUS_REQUIRE_GROUPS: 'true' });
   await app.control.save('models', { id: 'research', name: 'Research', providerId: (await app.control.snapshot()).models[0].providerId, model: 'native-research', maxTokens: 12000, pricing: prices }, actor);
   const backend = await app.control.issueKey({ name: 'Workflow group gateway', systemId: 'workflow', allowedModels: ['astra-default', 'research'] }, actor);
-  const user = { id: actor.id, email: actor.email, app_metadata: { role: 'participant', system_access: { workflow: true, colossus: false } } };
+  const user = { id: actor.id, email: actor.email, app_metadata: {astra_entitlement: {version:1,kind:'subscription',enabled:true,expiresAt:'2099-12-31T00:00:00.000Z'},  role: 'participant', system_access: { workflow: true, colossus: false } } };
   app.users.set('Bearer workflow-user', user);
-  const invoke = (body = {}, key = backend.oneTimeKey) => fetch(app.base + '/v1/chat/completions', { method: 'POST', headers: { Authorization: 'Bearer workflow-user', 'X-Colossus-Service-Key': key, 'X-Colossus-Activity': 'workflow.analysis.extraction', 'Content-Type': 'application/json' }, body: JSON.stringify({ model: 'untrusted-model-override', organizationId: 'forged', messages: [{ role: 'user', content: 'Private evidence' }], ...body }) });
+  const invoke = (body = {}, key = backend.oneTimeKey) => fetch(app.base + '/v1/chat/completions', { method: 'POST', headers: { Authorization: 'Bearer workflow-user', 'X-Colossus-Service-Key': key, 'X-Colossus-Activity': 'workflow.analysis.extraction', 'X-Astra-Computation-Id': '33333333-3333-4333-8333-333333333333', 'Content-Type': 'application/json' }, body: JSON.stringify({ model: 'untrusted-model-override', organizationId: 'forged', messages: [{ role: 'user', content: 'Private evidence' }], ...body }) });
   assert.equal((await invoke()).status, 409); assert.equal(app.requests.length, 0);
-  app.users.set('Bearer direct-account', { ...user, app_metadata: { role: 'participant', system_access: { colossus: true } } });
+  app.users.set('Bearer direct-account', { ...user, app_metadata: {astra_entitlement: {version:1,kind:'subscription',enabled:true,expiresAt:'2099-12-31T00:00:00.000Z'},  role: 'participant', system_access: { colossus: true } } });
   assert.equal((await app.call('/v1/chat/completions', { messages: [{ role: 'user', content: 'No scoped header' }] }, 'direct-account')).status, 409);
   await app.control.store.mutate(['workspaceMembers/' + actor.id, 'workspaceOrganizations/acme'], () => [{ status: 'active', orgId: 'acme' }, { status: 'active' }]);
   await app.control.save('groups', { id: 'researchers', name: 'Researchers', memberIds: [actor.id], modelIds: ['astra-default', 'research'], organizationId: 'acme', activityModels: { 'workflow.analysis': 'research' } }, actor);
@@ -223,7 +225,7 @@ test('group assignments stay isolated and concurrent attempts cannot put one acc
 test('Lab publishes immutable versioned routes through a narrowly scoped registration key without inference', async t => {
   const app = await service(t), providerId = (await app.control.snapshot()).models[0].providerId;
   const key = await app.control.issueKey({ name: 'Lab release registration', systemId: 'lab', allowedModels: ['astra-default'], registrationProviderIds: [providerId] }, actor);
-  app.users.set('Bearer lab-admin', { id: actor.id, email: actor.email, app_metadata: { role: 'participant', lab: { enabled: true, role: 'admin' }, system_access: { lab: true, colossus: false } } });
+  app.users.set('Bearer lab-admin', { id: actor.id, email: actor.email, app_metadata: {astra_entitlement: {version:1,kind:'subscription',enabled:true,expiresAt:'2099-12-31T00:00:00.000Z'},  role: 'participant', lab: { enabled: true, role: 'admin' }, system_access: { lab: true, colossus: false } } });
   const call = (body, token = 'lab-admin', scoped = key.oneTimeKey) => fetch(app.base + '/v1/lab/models', { method: body === undefined ? 'GET' : 'POST', headers: { Authorization: 'Bearer ' + token, 'X-Colossus-Service-Key': scoped, 'Content-Type': 'application/json' }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
   assert.equal((await call(undefined)).status, 200);
   const release = { id: 'lab-grounding', version: '1.0.0', name: 'Grounding research', providerId, model: 'deployed-grounding-1', maxTokens: 8000, evaluationUrl: 'https://research.example/evaluations/grounding-1' };
@@ -237,7 +239,7 @@ test('Lab publishes immutable versioned routes through a narrowly scoped registr
   const runtime = await app.control.issueKey({ name: 'Workflow research', systemId: 'workflow', allowedModels: [registered.id] }, actor);
   const inference = await fetch(app.base + '/v1/chat/completions', { method: 'POST', headers: { Authorization: 'Bearer admin-token', 'X-Colossus-Service-Key': runtime.oneTimeKey, 'Content-Type': 'application/json' }, body: JSON.stringify({ model: 'astra-default', messages: [{ role: 'user', content: 'Research question' }] }) });
   assert.equal(inference.status, 200); assert.equal(JSON.parse(app.requests[0].options.body).model, release.model);
-  app.users.set('Bearer lab-admin', { id: actor.id, app_metadata: { role: 'admin', lab: { enabled: true, role: 'reader' } } });
+  app.users.set('Bearer lab-admin', { id: actor.id, app_metadata: {astra_entitlement: {version:1,kind:'subscription',enabled:true,expiresAt:'2099-12-31T00:00:00.000Z'},  role: 'admin', lab: { enabled: true, role: 'reader' } } });
   assert.equal((await call(release)).status, 403);
   assert.equal((await call(release, key.oneTimeKey)).status, 403);
   await app.control.revokeKey(key.key.id, actor); assert.equal((await call(release)).status, 401);

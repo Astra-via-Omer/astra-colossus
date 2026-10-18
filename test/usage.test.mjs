@@ -7,7 +7,7 @@ import { tokenUsage, tokenCost, UsageMonitor, UsageStream } from '../src/usage.m
 import { Readable } from 'node:stream';
 
 const adminId = '11111111-1111-1111-1111-111111111111', memberId = '22222222-2222-2222-2222-222222222222';
-const baseEnv = { COLOSSUS_REQUIRE_GROUPS: 'false', ASTRA_PROVIDER_CONFIG_JSON: '{"key":"private-provider-key","model":"synthetic-model"}', SUPABASE_URL: 'https://auth.example', SUPABASE_ANON_KEY: 'public-key', COLOSSUS_ORIGIN: 'http://localhost:4002', COLOSSUS_PRICING_JSON: '{"astra-default":{"inputPerMillion":2,"cachedInputPerMillion":0.5,"outputPerMillion":4}}' };
+const baseEnv = { COLOSSUS_REQUIRE_GROUPS: 'false', ASTRA_PROVIDER_CONFIG_JSON: '{"key":"private-provider-key","model":"synthetic-model"}', SUPABASE_URL: 'https://auth.example', SUPABASE_ANON_KEY: 'public-key', SUPABASE_SERVICE_ROLE_KEY: 'credit-server-key', COLOSSUS_ORIGIN: 'http://localhost:4002', COLOSSUS_PRICING_JSON: '{"astra-default":{"inputPerMillion":2,"cachedInputPerMillion":0.5,"outputPerMillion":4}}' };
 const usage = { prompt_tokens: 1000, completion_tokens: 200, total_tokens: 1200, prompt_tokens_details: { cached_tokens: 400 }, completion_tokens_details: { reasoning_tokens: 60 } };
 const input = { focus: 'Check capacity', sources: [{ sourceId: 'source', sectionId: '1', text: 'Capacity is 20 units.' }] };
 const claim = { sourceId: 'source', sectionId: '1', text: 'Capacity is 20 units.', quote: 'Capacity is 20 units.', assessment: 'An assertion.', nextCheck: 'Check the measurement.', identity: 2, support: 1, reasoning: 1, importance: 3 };
@@ -15,9 +15,12 @@ const completion = () => ({ choices: [{ finish_reason: 'stop', message: { conten
 async function start(t, provider = async () => Response.json(completion()), extra = {}) {
   const logs = [], state = { role: 'admin' };
   const fetcher = async (url, options) => {
+    if (url.includes('/rest/v1/astra_colossus_engines')) return Response.json([]);
+    if (url.includes('/rpc/astra_admit_model_request')) { const args=JSON.parse(options.body);return Response.json({id:args.p_computation||args.p_request,owned:!args.p_computation}); }
+    if (url.includes('/rpc/astra_finish_model_request')) return Response.json(null);
     if (url.endsWith('/auth/v1/user')) {
       const member = options.headers.Authorization === 'Bearer member-token';
-      return Response.json({ id: member ? memberId : adminId, email: member ? 'member@example.com' : 'admin@example.com', app_metadata: { role: member ? 'participant' : state.role } });
+      return Response.json({ id: member ? memberId : adminId, email: member ? 'member@example.com' : 'admin@example.com', app_metadata: {astra_entitlement: {version:1,kind:'subscription',enabled:true,expiresAt:'2099-12-31T00:00:00.000Z'},  role: member ? 'participant' : state.role } });
     }
     return provider(url, options);
   };

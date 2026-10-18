@@ -4,7 +4,7 @@ import { accountDisplay, readDisplayBody } from '../src/account-display.mjs';
 import { defaultDisplayPreferences as defaults, validDisplayPreferences } from '../src/display-contract.mjs';
 
 test('display settings use the existing shared account record and preserve all unrelated metadata', async () => {
-  const users = new Map([['alpha', { id: 'alpha', app_metadata: { role: 'admin' }, user_metadata: { name: 'Alpha', anotherProduct: { keep: true } } }], ['beta', { id: 'beta', user_metadata: {} }]]);
+  const users = new Map([['alpha', { id: 'alpha', app_metadata: {astra_entitlement: {version:1,kind:'subscription',enabled:true,expiresAt:'2099-12-31T00:00:00.000Z'},  role: 'admin' }, user_metadata: { name: 'Alpha', anotherProduct: { keep: true } } }], ['beta', { id: 'beta', user_metadata: {} }]]);
   const writes = [];
   const fetcher = async (url, options) => {
     assert.equal(url, 'https://account.example/auth/v1/user'); assert.equal(options.cache, 'no-store');
