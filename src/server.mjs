@@ -151,7 +151,7 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
   }
   const server = http.createServer(async (req, res) => {
     const requestId = randomUUID(), started = Date.now();
-    let operation = 'request', admitted = false, timer, process, cancellationTimer;
+    let operation = 'request', admitted = false, timer, process, cancellationTimer, errorCode;
     const controller = new AbortController();
     async function finishProcess(status, errorCode) {
       try {
@@ -399,7 +399,8 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
       fail(404, 'not_found', 'Unknown API route.');
     } catch (error) {
       const cancelled = controller.signal.reason === 'admin_cancelled';
-      await finishProcess(controller.signal.aborted ? 'cancelled' : 'failed', cancelled ? 'admin_cancelled' : controller.signal.aborted ? 'request_timeout' : error instanceof ApiError ? error.code : 'service_error');
+      errorCode = cancelled ? 'admin_cancelled' : controller.signal.aborted ? 'request_timeout' : error instanceof ApiError ? error.code : 'service_error';
+      await finishProcess(controller.signal.aborted ? 'cancelled' : 'failed', errorCode);
       if (!res.headersSent && !res.destroyed) {
         const timedOut = controller.signal.aborted;
         json(res, { error: { code: cancelled ? 'admin_cancelled' : timedOut ? 'request_timeout' : error instanceof ApiError ? error.code : 'service_error',
@@ -408,7 +409,7 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
     } finally {
       clearTimeout(timer); clearInterval(cancellationTimer); activeControllers.delete(requestId);
       if (admitted === 'control') controlInflight--; else if (admitted) inflight--;
-      if (operation !== 'health') logger({ service: 'colossus', requestId, operation, status: res.statusCode, durationMs: Date.now() - started });
+      if (operation !== 'health') logger({ service: 'colossus', requestId, operation, status: res.statusCode, durationMs: Date.now() - started, ...(errorCode ? { errorCode } : {}) });
     }
   });
   server.requestTimeout = Math.min(config.timeout, 30000);
