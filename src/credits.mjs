@@ -2,6 +2,7 @@ import { fail } from './config.mjs';
 
 const uuid = value => typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
 const errors = {
+  CLIENT_ENTITLEMENT_INACTIVE: [403, 'entitlement_inactive', 'Your trial or subscription has expired, is paused, or has not been configured.'],
   CLIENT_ACCESS_DENIED: [403, 'account_inactive', 'This account cannot run models for this product.'],
   CLIENT_ACCOUNT_REQUIRED: [409, 'credit_account_required', 'An administrator must configure your Astra credit account.'],
   CLIENT_PAUSED: [403, 'credits_paused', 'Computations are paused for this account.'],

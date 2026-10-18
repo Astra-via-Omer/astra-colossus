@@ -55,7 +55,7 @@ test('account media calls require the Enigma server credential as well as the pr
  const service=createService(config,{logger:()=>{},fetcher:async (url,options)=>{
   if(String(url).includes('/rpc/astra_admit_model_request')){const args=JSON.parse(options.body);return Response.json({id:args.p_computation||args.p_request,owned:!args.p_computation});}
   if(String(url).includes('/rpc/astra_finish_model_request'))return Response.json(null);
-  if(String(url).includes('/auth/v1/user'))return Response.json({id:'11111111-1111-4111-8111-111111111111',app_metadata:{role}});
+  if(String(url).includes('/auth/v1/user'))return Response.json({id:'11111111-1111-4111-8111-111111111111',app_metadata:{astra_entitlement: {version:1,kind:'subscription',enabled:true,expiresAt:'2099-12-31T00:00:00.000Z'}, role}});
   if(String(url).startsWith('http://metadata.'))return Response.json({access_token:'synthetic-runtime',expires_in:3600});
   providerCalls++;return Response.json({totalTokens:6001});
  }});
@@ -71,7 +71,7 @@ test('native media retains system grants, paused routes and atomic spending admi
  const config=configuration({COLOSSUS_REQUIRE_GROUPS:'false',SUPABASE_URL:'https://accounts.example.invalid',SUPABASE_ANON_KEY:'public',SUPABASE_SERVICE_ROLE_KEY:'credits',COLOSSUS_MEDIA_INGEST_KEY:'synthetic-media-gateway-credential-00000001',ASTRA_PROVIDER_CONFIG_JSON:JSON.stringify({key:'synthetic-key',model:'test-model'}),COLOSSUS_MEDIA_PROJECT:'astra-via',COLOSSUS_MEDIA_MODEL:'gemini-3.1-flash-lite'});
  let generated=0;
  const app=createService(config,{logger:()=>{},fetcher:async (url,options)=>{
-  if(String(url).includes('/auth/v1/user'))return Response.json({id:'11111111-1111-4111-8111-111111111111',app_metadata:{role:'participant'}});
+  if(String(url).includes('/auth/v1/user'))return Response.json({id:'11111111-1111-4111-8111-111111111111',app_metadata:{astra_entitlement: {version:1,kind:'subscription',enabled:true,expiresAt:'2099-12-31T00:00:00.000Z'}, role:'participant'}});
   if(String(url).includes('/rpc/astra_admit_model_request')){const args=JSON.parse(options.body);return Response.json({id:args.p_computation||args.p_request,owned:!args.p_computation});}
   if(String(url).startsWith('http://metadata.'))return Response.json({access_token:'synthetic-runtime',expires_in:3600});
   if(String(url).endsWith(':countTokens'))return Response.json({totalTokens:500});

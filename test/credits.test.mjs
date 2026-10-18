@@ -30,7 +30,7 @@ async function start(t) {
  const config=configuration({COLOSSUS_REQUIRE_GROUPS:'false',ASTRA_PROVIDER_CONFIG_JSON:'{"key":"synthetic-provider-key","model":"synthetic"}',
   SUPABASE_URL:'https://auth.invalid',SUPABASE_ANON_KEY:'public',SUPABASE_SERVICE_ROLE_KEY:'private-server-key',COLOSSUS_MEDIA_INGEST_KEY:'synthetic-media-ingestion-key-000000001'});
  const app=createService(config,{logger:()=>{},fetcher:async(url,options)=>{
-  if(url.endsWith('/auth/v1/user')) return Response.json({id:identity.id,app_metadata:{role:'admin'}});
+  if(url.endsWith('/auth/v1/user')) return Response.json({id:identity.id,app_metadata:{astra_entitlement: {version:1,kind:'subscription',enabled:true,expiresAt:'2099-12-31T00:00:00.000Z'}, role:'admin'}});
   if(url.endsWith('/rpc/astra_admit_model_request')) {
    state.checks++;assert.equal(options.headers.Authorization,'Bearer private-server-key');
    const args=JSON.parse(options.body);state.requestIds.push(args.p_request);

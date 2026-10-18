@@ -95,7 +95,7 @@ test('shared Supabase registry supports multiple instances without local state',
 test('blocks revoked accounts and cookie mutations from other origins', async t => {
   let disabled = false;
   const { call, base } = await start(t, { SUPABASE_URL: 'https://auth.example', SUPABASE_ANON_KEY: 'public-key' }, async url => {
-    if (url.endsWith('/auth/v1/user')) return Response.json({ id: '11111111-1111-1111-1111-111111111111', app_metadata: { role: 'participant', disabled } });
+    if (url.endsWith('/auth/v1/user')) return Response.json({ id: '11111111-1111-1111-1111-111111111111', app_metadata: {astra_entitlement: {version:1,kind:'subscription',enabled:true,expiresAt:'2099-12-31T00:00:00.000Z'},  role: 'participant', disabled } });
     return Response.json(completion([claim]));
   });
   assert.equal((await call('/v1/models', undefined, 'account-token')).status, 200);

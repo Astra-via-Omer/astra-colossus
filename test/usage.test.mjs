@@ -20,7 +20,7 @@ async function start(t, provider = async () => Response.json(completion()), extr
     if (url.includes('/rpc/astra_finish_model_request')) return Response.json(null);
     if (url.endsWith('/auth/v1/user')) {
       const member = options.headers.Authorization === 'Bearer member-token';
-      return Response.json({ id: member ? memberId : adminId, email: member ? 'member@example.com' : 'admin@example.com', app_metadata: { role: member ? 'participant' : state.role } });
+      return Response.json({ id: member ? memberId : adminId, email: member ? 'member@example.com' : 'admin@example.com', app_metadata: {astra_entitlement: {version:1,kind:'subscription',enabled:true,expiresAt:'2099-12-31T00:00:00.000Z'},  role: member ? 'participant' : state.role } });
     }
     return provider(url, options);
   };
