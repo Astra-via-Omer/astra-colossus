@@ -41,6 +41,7 @@ export class ControlPlane {
       seeds.push(['providers/' + providerId, { id: providerId, name: new URL(route.baseUrl).hostname === 'api.deepseek.com' ? 'DeepSeek' : 'Managed provider', kind: 'compatible', protocol: route.protocol || 'openai', baseUrl: route.baseUrl, enabled: true, envAlias: alias, credential: null, allowAnonymous: false, health: null, createdAt: now(), updatedAt: now() }]);
       seeds.push(['models/' + alias, { id: alias, name: alias === 'astra-default' ? 'Astra Default' : alias, providerId, model: route.model, capabilities: route.capabilities, task: 'chat', maxTokens: 4000, pricing: route.pricing || null, enabled: true, createdAt: now(), updatedAt: now() }]);
     }
+    if (this.config.freeGroupId) seeds.push(['groups/' + id(this.config.freeGroupId), { id: this.config.freeGroupId, name: 'Free Workspace PDF checking', enabled: true, modelIds: ['astra-default'], memberIds: [], organizationId: null, activityModels: {}, createdAt: now(), updatedAt: now() }]);
     if (this.config.media) {
       seeds.push(['providers/managed-vertex-media', { id: 'managed-vertex-media', name: 'Google Vertex AI', kind: 'vertex', protocol: 'vertex', native: 'vertex-media', baseUrl: 'https://aiplatform.googleapis.com', credential: null, enabled: true, createdAt: now(), updatedAt: now() }]);
       seeds.push(['models/broadcast-media', { id: 'broadcast-media', name: 'Broadcast observation', providerId: 'managed-vertex-media', native: 'vertex-media', model: this.config.media.model, task: 'observation', maxTokens: 1400, capabilities: ['text', 'audio', 'image'], pricing: null, enabled: true, createdAt: now(), updatedAt: now() }]);
@@ -192,8 +193,10 @@ export class ControlPlane {
     }
     await this.ensure();
     const assignment = identity.kind === 'account' ? (await this.store.get('groupMembers/' + identity.id)).data : null;
-    const group = assignment?.groupId ? (await this.store.get('groups/' + assignment.groupId)).data : null;
-    if (assignment?.groupId && !group?.enabled) fail(403, 'group_paused', 'Your model group is paused or unavailable.');
+    const freeWorkspace = identity.kind === 'account' && identity.workspaceScope === 'pdf' && identity.systemId === 'workflow' && !!identity.keyId;
+    const groupId = assignment?.groupId || (freeWorkspace ? this.config.freeGroupId : null);
+    const group = groupId ? (await this.store.get('groups/' + groupId)).data : null;
+    if (groupId && !group?.enabled) fail(403, 'group_paused', 'Your model group is paused or unavailable.');
     if (enforce && (identity.requireGroup || (identity.kind === 'account' && this.config.requireGroups)) && !group) fail(409, 'group_required', 'An administrator must assign this account to a Colossus model group.');
     const organizationId = identity.kind === 'account' && (identity.keyId || group?.organizationId) ? await this.store.organizationFor(identity.id) : null;
     if (group?.organizationId && group.organizationId !== organizationId) fail(403, 'organization_denied', 'This group requires active membership in its approved organization.');
