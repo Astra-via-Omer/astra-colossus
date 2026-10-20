@@ -64,8 +64,12 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
       name: typeof name === 'string' ? name.slice(0, 80) : '', token };
   }
   const sessionId = req => /(?:^|;\s*)colossus_session=([^;]+)/.exec(req.headers.cookie || '')?.[1];
+  function requireConsoleAccess(identity) {
+    if (!['admin', 'participant'].includes(identity.role)) fail(403, 'access_denied', 'Colossus requires an active Astra admin or participant account with Colossus access approved.');
+    return identity;
+  }
   function requireConsoleAdmin(identity) {
-    if (!identity.admin) fail(403, 'access_denied', 'Colossus console access is currently limited to active Astra administrators.');
+    if (!identity.admin) fail(403, 'admin_required', 'Only Astra administrators can manage Colossus operations.');
     return identity;
   }
   async function browserIdentity(req) {
@@ -73,7 +77,7 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
     const id = sessionId(req);
     if (!id) fail(401, 'unauthorized', 'Sign in with your Astra account.');
     const session = await sessions.get(id);
-    return { ...requireConsoleAdmin(await userFor(session.token)), expiresAt: session.expiresAt };
+    return { ...requireConsoleAccess(await userFor(session.token)), expiresAt: session.expiresAt };
   }
   const hasRegistry = () => !!(config.engineBucket || (config.serviceKey && config.supabaseUrl) || (config.engineFile && !config.production));
   const profile = identity => ({ user: { id: identity.id, email: identity.email, name: identity.name, role: identity.role },
@@ -222,7 +226,7 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
         try { data = await response.json(); }
         catch { fail(503, 'auth_unavailable', 'The shared sign-in service returned an invalid session.'); }
         if (!data || typeof data.access_token !== 'string' || !data.access_token || /\s/.test(data.access_token) || data.access_token.length > 16000) fail(503, 'auth_unavailable', 'The shared sign-in service returned an invalid session.');
-        const identity = requireConsoleAdmin(await userFor(data.access_token)), previous = sessionId(req);
+        const identity = requireConsoleAccess(await userFor(data.access_token)), previous = sessionId(req);
         if (previous) await sessions.revoke(previous);
         const session = await sessions.create(data.access_token, data.expires_in ?? 3600);
         res.setHeader('Set-Cookie', cookie(session.id, session.seconds));
@@ -233,14 +237,14 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
         res.setHeader('Set-Cookie', cookie('', 0)); return json(res, { signedOut: true });
       }
       if (url.pathname === '/v1/monitoring') {
-        operation = 'monitoring'; await browserIdentity(req);
+        operation = 'monitoring'; requireConsoleAdmin(await browserIdentity(req));
         if (method !== 'GET') fail(405, 'method_not_allowed', 'Use GET for usage monitoring.');
         const snapshot = await monitoring.snapshot(Number(url.searchParams.get('days') || 1), url.searchParams.get('userId') || '');
         if (control.enabled) { await control.ensure(); const models = await control.store.list('models'); snapshot.rates = models.map(model => ({ route: model.id, providerModel: model.model, rates: model.pricing })); }
         return json(res, snapshot);
       }
       if (url.pathname === '/v1/control' || url.pathname.startsWith('/v1/control/')) {
-        operation = 'control_plane'; const actor = await browserIdentity(req);
+        operation = 'control_plane'; const actor = requireConsoleAdmin(await browserIdentity(req));
         if (method === 'GET' && url.pathname === '/v1/control') return json(res, await control.snapshot());
         if (method === 'GET' && url.pathname === '/v1/control/organizations') return json(res, { organizations: await control.store.organizations() });
         if (!['POST', 'PATCH'].includes(method)) fail(405, 'method_not_allowed', 'Use the supported operations control method.');

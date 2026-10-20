@@ -145,3 +145,8 @@
 @media(max-width:1200px) { .ops-sidebar { width:16rem; }.ops-workspace { margin-left:16rem; }.provider-summary-list { display:block; } }
 @media(max-width:900px) { .ops-sidebar { position:relative; width:100%; height:auto; padding:1rem; }.ops-brand { flex-direction:row; align-items:center; padding:0 0 1rem; gap:1rem; }.ops-brand img { width:8rem; }.ops-sidebar>.nav-group-label,.ops-navigation .nav-group-label,.sidebar-bottom { display:none; }.ops-navigation { flex-direction:row; overflow-x:auto; }.ops-navigation a { flex-shrink:0; white-space:nowrap; }.ops-workspace { margin-left:0; }.ops-topbar { padding:1rem; }.ops-main { padding:1rem; }.overview-main-grid,.overview-secondary-grid { grid-template-columns:1fr; }.heading-actions { flex-wrap:wrap; }.page-heading { flex-direction:column; align-items:start; }.ops-brand>span { font-size:1rem; }.brand-version { font-size:.875rem; } }
 @media(max-width:500px) { .overview-metrics { grid-template-columns:1fr; }.overview-metrics .metric-card { min-height:0; }.metric-lines,.metric-sparkline { display:none; }.page-heading h1,.page-heading.compact h1 { font-size:2rem; }.topbar-location { display:none; }.topbar-tools { width:100%; }.preset-grid { grid-template-columns:1fr; }.ecosystem-nodes { grid-template-columns:1fr; }.provider-summary .ops-badge { white-space:normal; } }
+
+/* Keep operations private while access is checked and for participant accounts. */
+[data-console-role]:not([data-console-role="admin"]) [data-admin-only] { display:none !important; }
+[data-console-role="participant"] #room > .grid { grid-template-columns:1fr; }
+[data-console-role="participant"] #service-overview { grid-template-columns:repeat(2,minmax(0,1fr)); }

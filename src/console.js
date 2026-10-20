@@ -2,9 +2,14 @@ const $ = id => document.getElementById(id);
 let engines = [], lastResult, busy = false, permissions, account, accountVerified = false, signingOut = false;
 let authController = new AbortController(), userOffset = 0, userCount = 0, pendingChange, checkingAccount = false;
 function controls() {
-  const connected = !!account && accountVerified && account.role === 'admin', admin = connected && !!permissions?.admin;
+  const connected = !!account && accountVerified && ['admin', 'participant'].includes(account.role), admin = connected && account.role === 'admin' && !!permissions?.admin;
+  document.body.dataset.consoleRole = connected ? account.role : 'checking';
   $('account').hidden = !account; $('room').hidden = !connected;
-  $('access-link').hidden = !admin; $('user-access').hidden = !admin;
+  $('access-link').hidden = !connected; $('user-access').hidden = !admin;
+  $('access-link').querySelector('span:last-child').textContent = admin ? 'Users & access' : 'My account';
+  $('ops-role').textContent = connected ? (admin ? 'Administrator' : 'Participant') : 'Verifying access';
+  $('ops-refresh').hidden = !admin;
+  $('engine-studio-description').textContent = admin ? 'Run source validation, publish versioned review instructions and evaluate bounded fixtures.' : 'Run source validation and download traceable results.';
   $('monitor-link').hidden = !admin; $('monitoring').hidden = !admin;
   $('create').closest('section').hidden = !admin; $('evaluate').closest('section').hidden = !admin;
   $('run').querySelector('button').disabled = busy || !connected;
@@ -101,8 +106,13 @@ async function checkAccount() {
   try {
     const profile = await api('/session'), previousRole = account?.role;
     if (authController.signal.aborted) return;
-    displayAccount(profile);
-    if (previousRole !== account.role) { $('user-rows').replaceChildren(); pendingChange = undefined; $('access-confirmation').hidden = true; await load(); }
+    if (previousRole !== profile.user.role) {
+      permissions = undefined; clearMonitoring();
+      document.dispatchEvent(new Event('colossus:locked'));
+      $('user-rows').replaceChildren(); pendingChange = undefined; $('access-confirmation').hidden = true;
+    }
+    displayAccount(profile); controls();
+    if (previousRole !== account.role) await load();
     controls();
     if (!wasVerified) document.dispatchEvent(new CustomEvent('colossus:ready', { detail: { user: account, capabilities: permissions } }));
   } catch (error) {

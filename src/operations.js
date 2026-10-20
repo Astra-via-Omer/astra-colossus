@@ -1,6 +1,6 @@
 (() => {
   const byId = id => document.getElementById(id);
-  let catalog, usage, verified = false, refreshInFlight = false, editor, confirmation, selectedView = 'overview';
+  let catalog, usage, verified = false, consoleRole, accessVersion = 0, refreshInFlight = false, editor, confirmation, selectedView = 'overview';
   const discovered = new Map(), peopleDirectory = new Map();
   let groupUsers, groupOrganizations, groupSearchTimer, groupSearchVersion = 0;
   const titles = { overview: 'Overview', models: 'Models', groups: 'User groups', providers: 'Providers', systems: 'Astra systems', keys: 'API access', processes: 'Processes', analytics: 'Costs & usage', integrations: 'Integrations', engines: 'Engine studio', access: 'Users & access', guide: 'Documentation' };
@@ -25,10 +25,12 @@
   const keyEnabled = key => key.enabled && Date.parse(key.expiresAt) > Date.now();
   function providerMark(provider) { const kind = provider.kind === 'compatible' && provider.baseUrl?.includes('deepseek.com') ? 'deepseek' : provider.kind; return node('span', 'provider-mark ' + kind + '-mark', kind === 'gpu' ? '⌘' : provider.name.slice(0, 1).toUpperCase()); }
   function showView(view, updateHash = true) {
-    if (!Object.hasOwn(titles, view)) view = 'overview'; selectedView = view;
+    if (!Object.hasOwn(titles, view)) view = 'overview';
+    if (consoleRole !== 'admin' && !['engines', 'access', 'guide'].includes(view)) view = 'engines';
+    selectedView = view;
     document.querySelectorAll('.ops-view').forEach(element => { element.hidden = element.id !== 'view-' + view; });
     document.querySelectorAll('.ops-navigation [data-view]').forEach(link => { const active = link.dataset.view === view; link.classList.toggle('active', active); if (active) link.setAttribute('aria-current', 'page'); else link.removeAttribute('aria-current'); });
-    byId('ops-view-title').textContent = titles[view];
+    byId('ops-view-title').textContent = view === 'access' && consoleRole === 'participant' ? 'My account' : titles[view];
     if (view === 'guide') byId('guide').open = true;
     if (updateHash) history.replaceState(null, '', '#' + (view === 'analytics' ? 'monitoring' : view === 'access' ? 'user-access' : view));
   }
@@ -170,8 +172,8 @@
     if (catalog) document.dispatchEvent(new CustomEvent('colossus:catalog', { detail: catalog.models.filter(model => model.enabled && catalog.providers.some(provider => provider.id === model.providerId && provider.enabled && (provider.credentialConfigured || provider.allowAnonymous))) }));
   }
   async function refresh() {
-    if (!verified || refreshInFlight) return; refreshInFlight = true; byId('ops-refresh').disabled = true;
-    try { const [registry, activity, users, organizations] = await Promise.all([api('/v1/control'), api('/v1/monitoring?days=1'), api('/v1/access/users?search=&offset=0').catch(() => null), api('/v1/control/organizations').catch(() => null)]); if (!verified) return; catalog = registry; usage = activity; groupUsers = users; groupOrganizations = organizations; for (const user of users?.users || []) peopleDirectory.set(user.id, user); byId('ops-storage').textContent = registry.storage === 'firestore' ? 'Database connected' : 'Local preview · volatile'; byId('ops-environment').lastChild.textContent = registry.storage === 'firestore' ? 'PRODUCTION GATEWAY' : 'LOCAL PREVIEW'; byId('ops-api-example').textContent = byId('ops-api-example').textContent.replace('https://colossus.astra-via.com', registry.gateway.origin); renderAll(); }
+    if (!verified || refreshInFlight) return; const version = accessVersion; refreshInFlight = true; byId('ops-refresh').disabled = true;
+    try { const [registry, activity, users, organizations] = await Promise.all([api('/v1/control'), api('/v1/monitoring?days=1'), api('/v1/access/users?search=&offset=0').catch(() => null), api('/v1/control/organizations').catch(() => null)]); if (!verified || version !== accessVersion) return; catalog = registry; usage = activity; groupUsers = users; groupOrganizations = organizations; for (const user of users?.users || []) peopleDirectory.set(user.id, user); byId('ops-storage').textContent = registry.storage === 'firestore' ? 'Database connected' : 'Local preview · volatile'; byId('ops-environment').lastChild.textContent = registry.storage === 'firestore' ? 'PRODUCTION GATEWAY' : 'LOCAL PREVIEW'; byId('ops-api-example').textContent = byId('ops-api-example').textContent.replace('https://colossus.astra-via.com', registry.gateway.origin); renderAll(); }
     catch (error) { if (verified) notice(error.message, true); }
     finally { refreshInFlight = false; byId('ops-refresh').disabled = false; }
   }
@@ -333,9 +335,16 @@
   document.querySelectorAll('[data-provider-preset]').forEach(control => control.addEventListener('click', () => openEditor('providers', null, control.dataset.providerPreset)));
   byId('ops-refresh').addEventListener('click', refresh); byId('process-refresh').addEventListener('click', refresh);
   byId('groups-search').addEventListener('input', searchGroups); byId('models-search').addEventListener('input', renderModels); byId('process-search').addEventListener('input', renderProcesses); byId('process-state').addEventListener('change', renderProcesses);
-  document.addEventListener('colossus:ready', () => { verified = true; void refresh(); });
-  document.addEventListener('colossus:usage', event => { if (event.detail.days === 1 && !event.detail.userId) { usage = event.detail; renderOverview(); renderModels(); renderProcesses(); } });
-  document.addEventListener('colossus:locked', () => { verified = false; groupSearchVersion++; clearTimeout(groupSearchTimer); editor?.groupForm?.dispose(); catalog = undefined; usage = undefined; groupUsers = undefined; groupOrganizations = undefined; peopleDirectory.clear(); discovered.clear(); clearKey(); byId('ops-editor-fields').replaceChildren(); byId('ops-process-detail-body').replaceChildren(); editor = null; confirmation = null; for (const id of ['overview-models', 'overview-calls', 'overview-tokens', 'overview-cost']) byId(id).textContent = '—'; for (const dialog of document.querySelectorAll('.ops-dialog[open]')) dialog.close(); for (const id of ['ops-model-rows', 'ops-group-rows', 'ops-key-rows', 'ops-process-rows', 'ops-provider-cards', 'ops-system-cards', 'ops-integration-cards', 'ops-external-jobs', 'overview-audit', 'overview-processes', 'overview-providers', 'ecosystem-nodes']) byId(id).replaceChildren(); byId('ops-account').textContent = 'Access verification required'; byId('ops-storage').textContent = 'Actions paused'; });
+  document.addEventListener('colossus:ready', event => {
+    accessVersion++; consoleRole = event.detail.user.role; verified = consoleRole === 'admin';
+    document.body.dataset.consoleRole = consoleRole;
+    const hash = location.hash.slice(1);
+    showView(aliases[hash] || hash || (verified ? 'overview' : 'engines'));
+    if (verified) void refresh();
+    else { byId('ops-storage').textContent = 'Participant engine access'; byId('ops-environment').lastChild.textContent = 'ENGINE ROOM'; }
+  });
+  document.addEventListener('colossus:usage', event => { if (verified && event.detail.days === 1 && !event.detail.userId) { usage = event.detail; renderOverview(); renderModels(); renderProcesses(); } });
+  document.addEventListener('colossus:locked', () => { accessVersion++; consoleRole = undefined; verified = false; groupSearchVersion++; clearTimeout(groupSearchTimer); editor?.groupForm?.dispose(); catalog = undefined; usage = undefined; groupUsers = undefined; groupOrganizations = undefined; peopleDirectory.clear(); discovered.clear(); clearKey(); byId('ops-editor-fields').replaceChildren(); byId('ops-process-detail-body').replaceChildren(); editor = null; confirmation = null; for (const id of ['overview-models', 'overview-calls', 'overview-tokens', 'overview-cost']) byId(id).textContent = '—'; for (const dialog of document.querySelectorAll('.ops-dialog[open]')) dialog.close(); for (const id of ['ops-model-rows', 'ops-group-rows', 'ops-key-rows', 'ops-process-rows', 'ops-provider-cards', 'ops-system-cards', 'ops-integration-cards', 'ops-external-jobs', 'overview-audit', 'overview-processes', 'overview-providers', 'ecosystem-nodes']) byId(id).replaceChildren(); byId('ops-account').textContent = 'Access verification required'; byId('ops-storage').textContent = 'Actions paused'; });
   const timer = setInterval(() => { if (document.visibilityState === 'visible') void refresh(); }, 30000);
   window.addEventListener('pagehide', () => { clearInterval(timer); clearTimeout(groupSearchTimer); groupSearchVersion++; editor?.groupForm?.dispose(); clearKey(); });
 })();

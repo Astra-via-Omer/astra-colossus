@@ -31,6 +31,10 @@ async function start(t, extra = {}) {
       assert.equal(options.headers.apikey, 'public-test-key');
       return Response.json(url.endsWith('astra_list_users_v2') ? [{ user_id: otherId, email: 'reader@example.com', app_role: 'reader', account_status: 'Active', last_sign_in_at: null, raw_app_meta_data: { private: 'must-not-leak' } }] : null, { status: state.rpcStatus });
     }
+    if (url === 'https://api.deepseek.com/chat/completions') {
+      assert.equal(options.headers.Authorization, 'Bearer synthetic-machine-key');
+      return Response.json({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify({ claims: [{ text: 'Capacity is 20 units.', quote: 'Measured capacity is 20 units.', sourceId: 'measurement', sectionId: '1', assessment: 'A measurement is asserted.', nextCheck: 'Check the methods.', identity: 2, support: 1, reasoning: 1, importance: 4 }] }) } }], usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } });
+    }
     if (url.includes('metadata.google.internal') || url.includes('storage.googleapis.com')) return cloudFetch(url, options);
     throw Error('Unexpected upstream request');
   };
@@ -78,7 +82,7 @@ test('group organization choices remain browser-admin only and do not change mem
   app.state.user.app_metadata.role = 'viewer'; assert.equal((await app.call('/v1/control/organizations', cookie)).status, 403);
 });
 
-test('personal display API requires the current admin cookie and same-origin writes, and saves only its own account field', async t => {
+test('personal display API requires an approved account cookie and same-origin writes, and saves only its own account field', async t => {
   const app = await start(t), choice = { version: 1, font: 'verdana', textSize: 22, textWeight: 'bold', spacing: 'roomy', contrast: 'high', motion: 'reduced' };
   assert.equal((await app.call('/v1/preferences')).status, 401);
   assert.equal((await app.call('/v1/preferences', undefined, 'GET', undefined, { Authorization: 'Bearer synthetic-machine-key' })).status, 401);
@@ -89,6 +93,9 @@ test('personal display API requires the current admin cookie and same-origin wri
   response = await app.call('/v1/preferences', cookie, 'PUT', choice); assert.equal(response.status, 200); assert.deepEqual((await response.json()).preferences, choice);
   assert.equal(app.state.user.user_metadata.name, 'Test admin'); assert.equal(app.state.user.app_metadata.role, 'admin');
   assert.deepEqual((await (await app.call('/v1/preferences', cookie)).json()).preferences, choice);
+  app.state.user.app_metadata.role = 'participant';
+  response = await app.call('/v1/preferences', cookie, 'PUT', choice); assert.equal(response.status, 200); assert.deepEqual((await response.json()).preferences, choice);
+  assert.equal(app.state.user.app_metadata.role, 'participant');
   app.state.user.app_metadata.role = 'viewer'; assert.equal((await app.call('/v1/preferences', cookie, 'PUT', choice)).status, 403);
   assert(!JSON.stringify(app.logs).includes('synthetic-account-token'));
 });
@@ -108,7 +115,7 @@ test('logout, replacement login and server expiry prevent cookie replay', async 
 
 test('live protected roles, disabled state and assignment determine permissions on every request', async t => {
   const app = await start(t), { cookie } = await app.login();
-  for (const role of ['participant', 'reader', 'viewer']) {
+  for (const role of ['reader', 'viewer']) {
     app.state.user.app_metadata = { role }; app.state.user.user_metadata = { role: 'admin' };
     assert.equal((await app.call('/session', cookie)).status, 403);
     assert.equal((await app.call('/app', cookie)).status, 303);
@@ -118,7 +125,7 @@ test('live protected roles, disabled state and assignment determine permissions 
     assert.equal((await app.call('/v1/access/users', cookie)).status, 403);
     for (const route of ['/v1/engines', '/v1/engines/test', '/v1/evaluations']) assert.equal((await app.call(route, cookie, 'POST', {})).status, 403);
   }
-  for (const metadata of [{ role: 'admin', disabled: true }, { role: 'reader', colossus: { enabled: false } }, { role: 'admin', system_access: { colossus: false } }, { role: 'unassigned' }, {}]) {
+  for (const metadata of [{ role: 'admin', disabled: true }, { role: 'participant', colossus: { enabled: false } }, { role: 'participant', system_access: { colossus: false } }, { role: 'participant', disabled: true }, { role: 'admin', system_access: { colossus: false } }, { role: 'unassigned' }, {}]) {
     app.state.user.app_metadata = metadata;
     assert.equal((await app.call('/session', cookie)).status, 403);
     assert.equal((await app.call('/v1/models', cookie)).status, 403);
@@ -127,6 +134,50 @@ test('live protected roles, disabled state and assignment determine permissions 
   app.state.user.app_metadata = { role: 'admin' }; app.state.user.banned_until = '2099-01-01';
   assert.equal((await app.call('/session', cookie)).status, 403); delete app.state.user.banned_until;
   app.state.user.deleted_at = new Date().toISOString(); assert.equal((await app.call('/session', cookie)).status, 403);
+});
+
+test('approved participants sign in and run assigned engines while every administration API stays restricted', async t => {
+  const app = await start(t, { COLOSSUS_REQUIRE_GROUPS: 'true' });
+  app.state.user.app_metadata = { role: 'participant', colossus: { enabled: true }, system_access: { colossus: true } };
+  app.state.user.user_metadata = { role: 'admin' };
+  const { cookie, response } = await app.login(), profile = await response.json();
+  assert.equal(profile.user.role, 'participant');
+  assert.deepEqual(profile.permissions, { run: true, create: false, test: false, evaluate: false, manageUsers: false, monitoring: false });
+  assert.equal((await app.call('/app', cookie)).status, 200);
+  assert.equal((await app.call('/session', cookie)).status, 200);
+  assert.equal((await app.call('/v1/engines', cookie)).status, 200);
+  const input = { engineId: 'evidence-review', engineVersion: '1.0.0', input: { focus: 'Capacity', sources: [{ sourceId: 'measurement', sectionId: '1', text: 'Measured capacity is 20 units.' }] } };
+  const unassigned = await app.call('/v1/runs', cookie, 'POST', input);
+  assert.equal(unassigned.status, 409); assert.equal((await unassigned.json()).error.code, 'group_required');
+  const actor = { kind: 'account', id: otherId, admin: true };
+  await app.control.save('groups', { id: 'participants', name: 'Participants', memberIds: [adminId], modelIds: ['astra-default'] }, actor);
+  const run = await app.call('/v1/runs', cookie, 'POST', input);
+  assert.equal(run.status, 200); const result = await run.json();
+  assert.equal(result.claims[0].sourceId, 'measurement'); assert.equal(result.colossus.groupId, 'participants');
+  const before = app.state.calls.length;
+  for (const path of ['/v1/control', '/v1/control/organizations', '/v1/monitoring', '/v1/access/users']) {
+    const denied = await app.call(path, cookie); assert.equal(denied.status, 403, path);
+    assert.equal((await denied.json()).error.code, 'admin_required', path);
+  }
+  for (const [path, method] of [
+    ['/v1/control/providers', 'POST'], ['/v1/control/models', 'PATCH'], ['/v1/control/systems', 'POST'],
+    ['/v1/control/groups', 'POST'], ['/v1/control/integrations', 'POST'], ['/v1/control/jobs', 'POST'],
+    ['/v1/control/keys', 'POST'], ['/v1/control/keys/any/revoke', 'POST'], ['/v1/control/providers/any/check', 'POST'],
+    ['/v1/control/processes/any/cancel', 'POST'], ['/v1/access/users', 'PATCH'],
+    ['/v1/engines', 'POST'], ['/v1/engines/test', 'POST'], ['/v1/evaluations', 'POST'],
+  ]) assert.equal((await app.call(path, cookie, method, {})).status, 403, path);
+  assert(app.state.calls.slice(before).every(call => call.url.endsWith('/auth/v1/user')));
+  assert.equal((await app.call('/session', cookie)).status, 200);
+  // Existing admin cookies lose management privileges immediately on demotion.
+  app.state.user.app_metadata.role = 'admin'; assert.equal((await app.call('/v1/control', cookie)).status, 200);
+  app.state.user.app_metadata.role = 'participant'; assert.equal((await app.call('/v1/control', cookie)).status, 403);
+  assert.equal((await app.call('/app', cookie)).status, 200);
+  // Explicit approval revocation affects existing cookies and new sign-ins.
+  app.state.user.app_metadata.system_access.colossus = false;
+  assert.equal((await app.call('/session', cookie)).status, 403);
+  assert.equal((await app.call('/v1/runs', cookie, 'POST', input)).status, 403);
+  const login = await app.call('/session', undefined, 'POST', { email: 'admin@example.com', password: app.state.password });
+  assert.equal(login.status, 403); assert(!login.headers.has('set-cookie'));
 });
 
 test('shared admin controls use the signed-in identity and validate mutations before RPC', async t => {
