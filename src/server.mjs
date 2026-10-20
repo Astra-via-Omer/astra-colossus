@@ -15,6 +15,7 @@ import { providerRequest, providerResult, AnthropicStream } from './providerAdap
 import { MediaObserver, mediaCostUsd } from './media.mjs';
 import { accountDisplay, DisplayError } from './account-display.mjs';
 import { validDisplayPreferences } from './display-contract.mjs';
+import { CHRISTOPHER, evaluateChristopher } from './christopher.mjs';
 
 async function boundedJson(stream, limit, upstream = false) {
   const chunks = []; let size = 0;
@@ -297,11 +298,13 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
         operation = 'capabilities'; return json(res, { service: 'colossus', admin: identity.admin,
           engineCreation: hasRegistry(),
           streaming: 'sse', realtimeSession: false,
+          christopher: CHRISTOPHER,
           routes: await control.routes(identity),
           observer: { status: config.media ? 'ready' : 'unconfigured', engine: 'broadcast-observation@1.0.0', model: config.media?.model, input: 'PCM16 16 kHz mono WAV and timestamped JPEG frames', maxSampleMs: 4000, verification: 'Observation and claim detection only; no truth score.' } });
       }
       if (method === 'GET' && url.pathname === '/v1/models') { operation = 'models'; return json(res, { object: 'list', data: (await control.routes(identity)).flatMap(route => [...new Set([route.id, route.model])].filter(name => name === route.id || route.id === 'astra-default').map(name => ({ id: name, object: 'model', owned_by: 'colossus', capabilities: route.capabilities, task: route.task }))) }); }
       if (method === 'GET' && url.pathname === '/v1/engines') { operation = 'engines'; return json(res, { engines: await registry.list() }); }
+      if (method === 'GET' && url.pathname === '/v1/christopher') { operation = 'christopher_manifest'; return json(res, CHRISTOPHER); }
       if (method !== 'POST') fail(404, 'not_found', 'Unknown API route.');
       if (!(req.headers['content-type'] || '').startsWith('application/json')) fail(415, 'content_type', 'Use application/json.');
       const body = await boundedJson(req, config.bodyLimit);
@@ -311,7 +314,7 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
         const result = await control.registerLabModel(body, identity);
         return json(res, result, result.replay ? 200 : 201);
       }
-      const inferenceOperations = { '/v1/chat/completions': 'chat', '/v1/embeddings': 'embedding', '/v1/runs': 'run_engine', '/v1/engines/test': 'test_engine', '/v1/evaluations': 'evaluate', '/v1/media/observe': 'observe_media' };
+      const inferenceOperations = { '/v1/chat/completions': 'chat', '/v1/embeddings': 'embedding', '/v1/runs': 'run_engine', '/v1/engines/test': 'test_engine', '/v1/evaluations': 'evaluate', '/v1/media/observe': 'observe_media', '/v1/christopher/evaluate': 'christopher_evaluate' };
       if (Object.hasOwn(inferenceOperations, url.pathname)) {
         operation = inferenceOperations[url.pathname];
         if (['test_engine', 'evaluate'].includes(operation) && !identity.admin) fail(403, 'admin_required', 'Only admins can test or evaluate engines.');
@@ -329,6 +332,21 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
             if (checking || controller.signal.aborted) return; checking = true;
             try { if (await control.cancellation(requestId)) controller.abort('admin_cancelled'); } catch {} finally { checking = false; }
           }, 3000); cancellationTimer.unref();
+        }
+      }
+      if (url.pathname === '/v1/christopher/evaluate') {
+        const route = await control.christopherRoute(identity);
+        Object.assign(process, route.routing);
+        const reservation = await control.reserve(identity, route, {}, requestId, 1, 0);
+        const call = monitoring.call(process, route, CHRISTOPHER);
+        call.execution = 'local_cpu'; call.reservation = reservation; call.providerId = route.providerId;
+        try {
+          const result = await evaluateChristopher(body, { signal: controller.signal });
+          monitoring.finishCall(call, 'completed', { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, prompt_cache_hit_tokens: 0 }, 200);
+          return await complete({ requestId, ...result });
+        } catch (error) {
+          monitoring.finishCall(call, controller.signal.aborted ? 'cancelled' : 'failed', { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, prompt_cache_hit_tokens: 0 });
+          throw error;
         }
       }
       if (url.pathname === '/v1/embeddings') {

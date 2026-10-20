@@ -1,0 +1,16 @@
+{
+  "modelVersion": "0.1.0",
+  "stateSpace": "intervals",
+  "scope": { "entityId": "release:R42", "contextId": "release-policy:1", "windowId": "release-window:R42" },
+  "variables": [
+    { "id": "approval", "unit": "minute", "domain": { "min": "-10", "max": "10" } },
+    { "id": "deployment", "unit": "minute", "domain": { "min": "-10", "max": "10" } }
+  ],
+  "observations": [
+    { "id": "approval_record", "scope": { "entityId": "release:R42", "contextId": "release-policy:1", "windowId": "release-window:R42" }, "variableId": "approval", "unit": "minute", "interval": { "min": "-2", "max": "2" }, "sourceId": "approval-log", "sourceGroup": "release-audit", "locator": "event:R42:approval" },
+    { "id": "deployment_record", "scope": { "entityId": "release:R42", "contextId": "release-policy:1", "windowId": "release-window:R42" }, "variableId": "deployment", "unit": "minute", "interval": { "min": "0", "max": "0" }, "sourceId": "deployment-log", "sourceGroup": "release-audit", "locator": "event:R42:deployment" }
+  ],
+  "claims": [
+    { "id": "timely_approval", "text": "R42 had approval no later than deployment.", "kind": "linear", "unit": "minute", "terms": [ { "variableId": "approval", "coefficient": "1" }, { "variableId": "deployment", "coefficient": "-1" } ], "relation": "<=", "rhs": "0", "evidence": ["approval_record", "deployment_record"] }
+  ]
+}

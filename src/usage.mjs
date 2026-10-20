@@ -52,7 +52,7 @@ export function summarize(records) {
   const pricedCalls = calls.filter(call => call.cost.usd !== null && call.cost.complete).length;
   const estimatedCostUsd = calls.reduce((total, call) => total + (call.cost.usd ?? 0), 0);
   const pricedTokens = calls.reduce((total, call) => total + (call.cost.usd !== null ? call.usage.totalTokens ?? 0 : 0), 0);
-  const pricedDurationMs = calls.reduce((total, call) => total + (call.cost.usd !== null ? call.durationMs : 0), 0);
+  const pricedDurationMs = calls.reduce((total, call) => total + (call.cost.usd !== null && call.execution !== 'local_cpu' ? call.durationMs : 0), 0);
   const terminal = records.filter(record => !['running', 'stale'].includes(record.status));
   return { processes: records.length, running: records.filter(record => record.status === 'running').length,
     completed: records.filter(record => record.status === 'completed').length,
@@ -67,7 +67,7 @@ export function summarize(records) {
     costPerProviderMinuteUsd: pricedDurationMs > 0 ? estimatedCostUsd / (pricedDurationMs / 60000) : null,
     durationMs: terminal.reduce((total, record) => total + record.durationMs, 0),
     averageDurationMs: terminal.length ? terminal.reduce((total, record) => total + record.durationMs, 0) / terminal.length : null,
-    providerDurationMs: calls.reduce((total, call) => total + call.durationMs, 0) };
+    providerDurationMs: calls.reduce((total, call) => total + (call.execution === 'local_cpu' ? 0 : call.durationMs), 0) };
 }
 
 export class UsageMonitor {

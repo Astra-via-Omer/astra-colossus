@@ -166,6 +166,11 @@
     const mediaModel = catalog.models.find(model => model.id === 'broadcast-media'), mediaHelp = element('p', 'group-help'); mediaBlock.append(mediaHelp); models.append(mediaBlock);
     media.disabled = !mediaModel && !media.checked;
     media.addEventListener('change', () => { if (media.checked) allowModel('broadcast-media'); else draft.modelIds = draft.modelIds.filter(id => id !== 'broadcast-media'); renderModels(); updateSummary(); });
+    const mathBlock = element('div', 'group-media'), mathLabel = element('label', 'group-media-label'), math = element('input'); math.type = 'checkbox'; math.checked = draft.modelIds.includes('christopher');
+    mathLabel.append(math, element('strong', '', 'Enable Christopher mathematical checks')); mathBlock.append(mathLabel);
+    mathBlock.append(element('p', 'group-help', 'Evaluate structured claims and measurements inside Colossus. This uses a separate mathematical API and does not replace the group text model.'));
+    models.append(mathBlock); math.disabled = !catalog.models.some(model => model.id === 'christopher') && !math.checked;
+    math.addEventListener('change', () => { if (math.checked) allowModel('christopher'); else draft.modelIds = draft.modelIds.filter(id => id !== 'christopher'); renderModels(); updateSummary(); });
     const additional = element('details', 'group-additional'); additional.append(element('summary', '', 'Additional models and detailed rules'));
     additional.append(element('p', 'group-help', 'Keep other models available for requests the default cannot support. This does not retry failed provider calls.'));
     const additionalList = element('div', 'group-additional-list'); additional.append(additionalList);
@@ -193,7 +198,7 @@
           draft.modelIds = draft.modelIds.filter(id => id !== model.id);
         } renderModels(); updateSummary(); });
       }
-      const extras = draft.modelIds.filter(id => id !== selection && id !== 'broadcast-media');
+      const extras = draft.modelIds.filter(id => id !== selection && !['broadcast-media', 'christopher'].includes(id));
       if (extras.length) {
         const order = element('ol', 'group-model-order'); additionalList.append(element('p', 'group-help', 'Additional selection order'), order);
         extras.forEach((id, index) => {
