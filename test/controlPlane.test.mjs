@@ -257,3 +257,19 @@ test('live organization reads use the Workspace database and fail closed on revo
   disabled = true; await assert.rejects(store.organizationFor('user-one'), { code: 'organization_denied' });
   disabled = false; offline = true; await assert.rejects(store.organizationFor('user-one'), { code: 'control_unavailable' });
 });
+
+
+test('free PDF accounts inherit only the server-authenticated Workflow group and retain revocations', async () => {
+  const config=configuration({...settings,COLOSSUS_REQUIRE_GROUPS:'true'});
+  const store=new ControlStore(config,fetch),control=new ControlPlane(config,fetch,fetch,store);
+  const identity={kind:'account',id:'free-user',workspaceScope:'pdf',systemId:'workflow',keyId:'workflow-server'};
+  assert.equal((await control.groupAccess(identity)).group.id,'astra-free-pdf');
+  assert.equal((await control.groupAccess(identity)).organizationId,null);
+  for(const patch of [{keyId:null},{systemId:'enigma'},{workspaceScope:'full'}])
+    await assert.rejects(control.groupAccess({...identity,...patch}),{code:'group_required'});
+  await control.save('groups',{id:'astra-free-pdf',enabled:false},actor);
+  await assert.rejects(control.groupAccess(identity),{code:'group_paused'});
+  await control.save('groups',{id:'astra-free-pdf',enabled:true},actor);
+  await control.save('groups',{id:'explicit',name:'Explicit assignment',modelIds:['astra-default'],memberIds:['free-user'],enabled:false},actor);
+  await assert.rejects(control.groupAccess(identity),{code:'group_paused'});
+});

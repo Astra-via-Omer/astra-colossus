@@ -61,7 +61,7 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
     const name = user.user_metadata?.full_name || user.user_metadata?.name;
     return { kind: 'account', admin: role === 'admin', role, id: user.id,
       email: typeof user.email === 'string' ? user.email.slice(0, 254) : '',
-      name: typeof name === 'string' ? name.slice(0, 80) : '', token };
+      name: typeof name === 'string' ? name.slice(0, 80) : '', workspaceScope: user.app_metadata?.workspace_scope, token };
   }
   const sessionId = req => /(?:^|;\s*)colossus_session=([^;]+)/.exec(req.headers.cookie || '')?.[1];
   function requireConsoleAccess(identity) {
