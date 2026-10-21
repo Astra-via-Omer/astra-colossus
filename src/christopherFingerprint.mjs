@@ -4,7 +4,7 @@ import { fail } from './config.mjs';
 
 export const fingerprintVersion = 'scoped-affine-fingerprint@0.1.0';
 export const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
-export const isChristopherAdmin = identity => identity?.admin === true && (identity.kind === 'account' || identity.explicitAdmin === true);
+export const isChristopherAdmin = identity => identity?.admin === true && ((identity.kind === 'account' && identity.astraAdmin === true) || identity.explicitAdmin === true);
 export function requireChristopherAdmin(identity) {
   if (!isChristopherAdmin(identity)) fail(403, 'christopher_admin_required', 'Christopher is a private administrator experiment.');
 }
