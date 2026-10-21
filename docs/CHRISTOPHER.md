@@ -4,7 +4,9 @@ Christopher 0.1.0 is a native mathematical model running inside the Colossus
 Node service. It takes structured measurements and claims, and computes
 conditional gap bounds. The current release is a private administrator-only
 experiment, with an evidence fingerprint view at `/admin/christopher`.
-Ordinary users and product keys cannot invoke or discover it. Product adapters
+Ordinary users and product keys cannot invoke or discover it. The administrator
+pilot reads the same account's saved Workspace PDF reviews on demand; see
+[the live inspection guide](CHRISTOPHER-WORKSPACE.md). Automatic training adapters
 and any later access expansion require a separate validated release. It is
 not a newly trained language model. See [the private experiment guide](CHRISTOPHER-EXPERIMENT.md)
 for fingerprints, numerical reference learning and permission-gated shadow intake.

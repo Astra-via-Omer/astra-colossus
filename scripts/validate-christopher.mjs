@@ -5,6 +5,7 @@ import { randomBytes } from 'node:crypto';
 import { createService } from '../src/server.mjs';
 import { configuration } from '../src/config.mjs';
 import { evaluateChristopher } from '../src/christopher.mjs';
+import { savedWorkspaceFixture } from '../test/fixtures/workspace-review.mjs';
 
 const root = new URL('../', import.meta.url);
 const input = JSON.parse(await readFile(new URL('examples/christopher/r42.json', root), 'utf8'));
@@ -20,6 +21,8 @@ const app = createService(configuration({ ASTRA_PROVIDER_CONFIG_JSON: '{"key":"u
       return body.email === 'admin@example.invalid' && body.password === 'local-demo-only' ? Response.json({ access_token: 'local-synthetic-account', expires_in: 3600 }) : Response.json({}, { status: 401 });
     }
     if (servingDemo && url === 'https://local-demo.invalid/auth/v1/user' && options.headers.Authorization === 'Bearer local-synthetic-account') return Response.json({ id: 'local-demo-admin', email: 'admin@example.invalid', app_metadata: { role: 'admin' } });
+    if (servingDemo && url === 'https://workspace.astra-via.com/api/workspace/reviews') return Response.json({ items: [{ id: 'local-pdf-review', sourceName: 'Synthetic release report.pdf', status: 'completed', claimCount: 12 }], nextCursor: null });
+    if (servingDemo && url === 'https://workspace.astra-via.com/api/workspace/reviews/local-pdf-review') return Response.json(savedWorkspaceFixture());
     providerRequests++; throw Error('Provider access is disabled for the mathematical validation run.');
   }, logger: () => {} });
 await new Promise((resolve, reject) => { app.server.once('error', reject); app.server.listen(process.argv.includes('--serve') ? Number(process.env.PORT || 4014) : 0, '127.0.0.1', resolve); });

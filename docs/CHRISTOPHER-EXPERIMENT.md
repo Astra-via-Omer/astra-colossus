@@ -1,5 +1,11 @@
 # Private Christopher fingerprint experiment
 
+The current administrator pilot also reads the signed-in administrator's own
+completed Workspace PDF reviews, without another model call or dataset copy.
+The redesigned Gravity Well and shared Colossus navigation are documented in
+[the Workspace inspection guide](CHRISTOPHER-WORKSPACE.md). This live inspection
+path is separate from the still-disabled automatic training capture below.
+
 Open `https://colossus.astra-via.com/admin/christopher` after signing into
 Colossus with an active administrator account. The normal participant console,
 chat routing, DeepSeek serving, Google media and other providers are preserved.
@@ -108,7 +114,7 @@ record containing `allowStructuredTraining: true`, a reviewed `policyRef`,
 future `expiresAt`, and matching `allowedSystemIds`. The expiry is capped at the
 earlier of one day and grant expiry. No grant-editing API is provided here.
 
-Workspace and Enigma adapters have **not** been changed to supply that contract.
+Workspace and Enigma inference adapters have **not** been changed to supply that training contract.
 Consequently ordinary production traffic is not being collected or trained on.
 The hook stores permitted structured observations with teacher provenance;
 it does not capture or learn the full DeepSeek language output. An intentional
