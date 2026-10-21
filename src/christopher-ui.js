@@ -1,3 +1,4 @@
+import { mountPatternExample } from './christopher-pattern.js';
 import { GravityWell, claimGraph } from './christopher-gravity.js';
 import { reviewDimensions, rating, rubricScore, reviewNeeds, reviewSummary, formalSummary, activeReference, referenceComparison, requiredRelation, formalExplanation } from './christopher-report.js';
 const $ = id => document.getElementById('chr-' + id);
@@ -194,3 +195,5 @@ $('menu').addEventListener('click', () => menu(!document.body.classList.contains
 async function recheck() { if (busy || document.visibilityState !== 'visible') return; await act(async () => { const id = current?.review?.id; try { await dataset(); } finally { if (mode === 'workspace' && id) await loadReview(id, true); } }); }
 window.addEventListener('focus', () => void recheck()); const refreshTimer = setInterval(() => void recheck(), 60000); window.addEventListener('pagehide', () => { epoch++; clearInterval(refreshTimer); }); window.addEventListener('pageshow', e => { if (e.persisted) { const id = current?.review?.id; clear(); if (id) void act(() => loadReview(id)); } });
 void act(async () => { const profile = await api('/session'); document.getElementById('ops-account').textContent = profile.user.email; document.getElementById('ops-role').textContent = 'Astra administrator'; document.getElementById('ops-storage').textContent = 'Private experiment'; await api('/v1/christopher'); await loadReviews(); await dataset(); });
+
+mountPatternExample($('pattern-example'), { api, act });

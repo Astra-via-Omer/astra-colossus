@@ -1,0 +1,54 @@
+{
+  "dataset": "BPI Challenge 2012 researcher-hosted mirror",
+  "doi": "10.4121/uuid:3926db30-f712-4394-aebc-75976070e91f",
+  "download": "https://raw.githubusercontent.com/ERamaM/PredictiveMonitoringDatasets/master/raw_datasets/BPI_Challenge_2012.xes.gz",
+  "md5": "03192580235050bae52a5752c794d6b9",
+  "sha256": "0429a18ed3d9dec715ee2e76c36114edfdec059f5bb765aa29458a267e74feac",
+  "officialReleaseCompressedMd5": "74c7ba9aba85bfcb181a22c9d565e5b5",
+  "byteIdenticalToOfficialRelease": false,
+  "caseId": "173688",
+  "events": [
+    {
+      "concept:name": "A_SUBMITTED",
+      "time:timestamp": "2011-10-01T00:38:44.546+02:00",
+      "lifecycle:transition": "COMPLETE"
+    },
+    {
+      "concept:name": "A_PARTLYSUBMITTED",
+      "time:timestamp": "2011-10-01T00:38:44.880+02:00",
+      "lifecycle:transition": "COMPLETE"
+    },
+    {
+      "concept:name": "A_PREACCEPTED",
+      "time:timestamp": "2011-10-01T00:39:37.906+02:00",
+      "lifecycle:transition": "COMPLETE"
+    },
+    {
+      "concept:name": "A_ACCEPTED",
+      "time:timestamp": "2011-10-01T11:42:43.308+02:00",
+      "lifecycle:transition": "COMPLETE"
+    },
+    {
+      "concept:name": "A_FINALIZED",
+      "time:timestamp": "2011-10-01T11:45:09.243+02:00",
+      "lifecycle:transition": "COMPLETE"
+    },
+    {
+      "concept:name": "A_REGISTERED",
+      "time:timestamp": "2011-10-13T10:37:29.226+02:00",
+      "lifecycle:transition": "COMPLETE"
+    },
+    {
+      "concept:name": "A_APPROVED",
+      "time:timestamp": "2011-10-13T10:37:29.226+02:00",
+      "lifecycle:transition": "COMPLETE"
+    },
+    {
+      "concept:name": "A_ACTIVATED",
+      "time:timestamp": "2011-10-13T10:37:29.226+02:00",
+      "lifecycle:transition": "COMPLETE"
+    }
+  ],
+  "license": "Original record lists 4TU General Terms of Use",
+  "interpretation": "Exact excerpt from the identified researcher-hosted mirror. Its compressed bytes differ from the official-release checksum; identity to the official release is not claimed. Recorded timestamps are not independent authentication of events. The comparison rule is declared by astra-via, not asserted to be bank policy."
+}
