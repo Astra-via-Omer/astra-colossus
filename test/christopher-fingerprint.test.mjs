@@ -73,6 +73,15 @@ test('dataset ownership is server-set, expired examples stay unavailable and rea
   await store.mutate(['christopherExamples/' + accepted.id], ([r]) => [{ ...r, expiresAt: '2000-01-01T00:00:00Z' }]);
   assert.equal((await model.snapshot('owner')).examples.length, 0);
 });
+test('copied and transitively linked source families cannot become independent training samples', async () => {
+  const { model } = learning(), examples = demoExamples();
+  examples.slice(0, 8).forEach((e, i) => {
+    e.input.observations.forEach(o => { o.sourceGroup = 'shared-origin'; });
+    if (i === 7) e.input.observations[0].sourceGroup = 'another-origin';
+  });
+  for (const e of examples) await model.save('copies', e);
+  await assert.rejects(model.train('copies'), e => e.code === 'no_trainable_features');
+});
 test('shadow intake is disabled without deployment flags, retention and a live tenant grant', async () => {
   const { model, store } = learning(), identity = { kind: 'account', id: 'u', systemId: 'workflow' }, route = { routing: { organizationId: 'org1' } }, body = { christopherShadow: demoExamples()[0] };
   model.shadow(identity, route, body, {}); assert.equal((await store.list('christopherExamples')).length, 0);
@@ -85,6 +94,9 @@ test('shadow intake is disabled without deployment flags, retention and a live t
   assert.equal(enabled.stats.accepted, 1);
   const saved = (await store.list('christopherExamples'))[0];
   assert.equal(saved.label.origin, 'unreviewed'); assert.equal(saved.grantOrganizationId, 'org1');
+  await store.commit([{ path: 'christopherCandidates/derived', version: null, data: { id: 'derived', namespace: enabled.namespace(identity, 'org1'), expiresAt: new Date(Date.now() + 60000).toISOString(), sourceExampleIds: [saved.id] } }]);
+  assert.equal((await enabled.snapshot(enabled.namespace(identity, 'org1'))).candidates.length, 1);
   await store.mutate(['christopherGrants/org1'], ([g]) => [{ ...g, allowStructuredTraining: false }]);
   assert.equal((await enabled.examples(enabled.namespace(identity, 'org1'))).length, 0);
+  assert.equal((await enabled.snapshot(enabled.namespace(identity, 'org1'))).candidates.length, 0);
 });

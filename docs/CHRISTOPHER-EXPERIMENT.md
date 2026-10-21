@@ -53,7 +53,10 @@ versioned numerical reference: per-relation median, median absolute deviation,
 and observed training range. Eight earlier cases train it; four later cases
 from disjoint case IDs and source families are held out. The model saves learned
 parameters, holdout comparisons and midpoint absolute error. At least three
-point observations are required per learned feature. These approximate
+independent case/source groups with point observations are required per learned
+feature. Cases connected by a shared source family form one component; each
+component contributes one median, so copies cannot inflate the reference sample
+count. These approximate
 descriptive statistics use binary floating point, separately from exact gap
 arithmetic. A departure from a common pattern does not establish a policy
 violation. Deterministic fixture labels check the gap core, not learned-model
@@ -79,6 +82,7 @@ only in the separate dataset, with explicit data class and expiry.
 Limits: 100 examples per namespace, 64 KB per intake, 20 active candidate
 versions, one-day expiry, and two best-effort captures in flight per instance.
 Expired records and candidates are unavailable through the experiment API.
+Revoking a real-data grant also hides its examples and derived candidates.
 Erasing an example overwrites its payload with a tombstone and erases any
 derived candidate payload. Firestore physical TTL cleanup must be configured
 before real capture is enabled; expiry enforcement is not a physical-deletion
