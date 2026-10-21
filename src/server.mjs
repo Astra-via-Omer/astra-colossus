@@ -19,6 +19,8 @@ import { CHRISTOPHER, evaluateChristopher } from './christopher.mjs';
 import { fingerprint, requireChristopherAdmin, isChristopherAdmin } from './christopherFingerprint.mjs';
 import { ChristopherLearning } from './christopherLearning.mjs';
 import { demoInput, demoExamples } from './christopherFixtures.mjs';
+import { ChristopherWorkspace } from './christopherWorkspace.mjs';
+import { christopherShell } from './christopherShell.mjs';
 
 async function boundedJson(stream, limit, upstream = false) {
   const chunks = []; let size = 0;
@@ -37,6 +39,7 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
   const media = new MediaObserver(config.media, fetcher);
   const control = new ControlPlane(config, fetcher, endpointFetcher, controlStore), activeControllers = new Map();
   const christopherLearning = new ChristopherLearning(control.store, { captureEnabled: config.christopherCaptureEnabled, retentionReady: config.christopherRetentionReady });
+  const christopherWorkspace = new ChristopherWorkspace(fetcher);
   let inflight = 0, controlInflight = 0, draining = false;
   const json = (res, body, status = 200) => {
     res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
@@ -186,10 +189,13 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
       Object.assign(assets, { '/astra-display.js': ['astra-display.js', 'text/javascript'], '/display-contract.mjs': ['display-contract.mjs', 'text/javascript'], '/astra-display.css': ['astra-display.css', 'text/css'] });
       const asset = Object.hasOwn(assets, url.pathname) ? assets[url.pathname] : undefined;
       if (method === 'GET' && asset) { operation = 'console'; res.writeHead(200, { 'Content-Type': `${asset[1]}; charset=utf-8` }); return res.end(await readFile(new URL(asset[0], import.meta.url))); }
-      const privateAssets = { '/admin/christopher': ['christopher.html', 'text/html'], '/admin/christopher.js': ['christopher-ui.js', 'text/javascript'], '/admin/christopher.css': ['christopher.css', 'text/css'] };
+      const privateAssets = { '/admin/christopher': ['christopher.html', 'text/html'], '/admin/christopher.js': ['christopher-ui.js', 'text/javascript'], '/admin/christopher.css': ['christopher.css', 'text/css'], '/admin/christopher-gravity.js': ['christopher-gravity.js', 'text/javascript'] };
       if (method === 'GET' && Object.hasOwn(privateAssets, url.pathname)) {
         operation = 'christopher_private_ui'; requireChristopherAdmin(await browserIdentity(req));
-        const [file, type] = privateAssets[url.pathname]; res.writeHead(200, { 'Content-Type': `${type}; charset=utf-8` }); return res.end(await readFile(new URL(file, import.meta.url)));
+        const [file, type] = privateAssets[url.pathname];
+        let content = await readFile(new URL(file, import.meta.url), 'utf8');
+        if (file === 'christopher.html') content = christopherShell(content, await readFile(new URL('console.html', import.meta.url), 'utf8'));
+        res.writeHead(200, { 'Content-Type': `${type}; charset=utf-8` }); return res.end(content);
       }
       if (draining) fail(503, 'draining', 'Colossus is shutting down. Retry another instance.');
       const management = url.pathname.startsWith('/v1/control') || url.pathname === '/v1/monitoring' || url.pathname === '/session' || url.pathname === '/v1/preferences';
@@ -314,6 +320,8 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
       if (method === 'GET' && url.pathname === '/v1/models') { operation = 'models'; return json(res, { object: 'list', data: (await control.routes(identity)).flatMap(route => [...new Set([route.id, route.model])].filter(name => name === route.id || route.id === 'astra-default').map(name => ({ id: name, object: 'model', owned_by: 'colossus', capabilities: route.capabilities, task: route.task }))) }); }
       if (method === 'GET' && url.pathname === '/v1/engines') { operation = 'engines'; return json(res, { engines: await registry.list() }); }
       if (url.pathname.startsWith('/v1/christopher')) requireChristopherAdmin(identity);
+      if (method === 'GET' && url.pathname === '/v1/christopher/workspace/reviews') { operation = 'christopher_workspace_list'; return json(res, await christopherWorkspace.list(identity, url.searchParams.get('cursor'), controller.signal)); }
+      if (method === 'GET' && /^\/v1\/christopher\/workspace\/reviews\/[A-Za-z0-9_-]{1,120}$/.test(url.pathname)) { operation = 'christopher_workspace_inspect'; return json(res, await christopherWorkspace.review(identity, url.pathname.split('/').at(-1), controller.signal)); }
       if (method === 'GET' && url.pathname === '/v1/christopher') { operation = 'christopher_manifest'; return json(res, CHRISTOPHER); }
       if (method === 'GET' && url.pathname === '/v1/christopher/demo') return json(res, demoInput(url.searchParams.get('scenario') || 'uncertain'));
       if (url.pathname.startsWith('/v1/christopher/experiments')) {

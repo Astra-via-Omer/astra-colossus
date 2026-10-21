@@ -99,6 +99,10 @@ The [private fingerprint and learning guide](docs/CHRISTOPHER-EXPERIMENT.md)
 describes signed relation plots, a fitted numerical reference and guarded
 shadow intake. Ordinary users cannot access the experiment; automatic traffic
 capture and production model promotion are disabled.
+The [administrator Workspace pilot](docs/CHRISTOPHER-WORKSPACE.md) reads the
+signed-in administrator's own saved PDF reviews into an all-claims Gravity Well,
+preserving source paths and the normal Colossus sidebar without another model
+call, copied PDF or training write.
 
 Authenticate with `Authorization: Bearer <service key or shared-account access token>`. Browser sessions use the host-only cookie. All responses carry `X-Request-Id`. API errors have `{error:{code,message,requestId}}`.
 
