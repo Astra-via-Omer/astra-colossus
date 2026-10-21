@@ -150,3 +150,4 @@
 [data-console-role]:not([data-console-role="admin"]) [data-admin-only] { display:none !important; }
 [data-console-role="participant"] #room > .grid { grid-template-columns:1fr; }
 [data-console-role="participant"] #service-overview { grid-template-columns:repeat(2,minmax(0,1fr)); }
+.ops-license-form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;padding:20px 0}.ops-license-form label{display:grid;gap:8px}.ops-license-form input,.ops-license-form select{width:100%;min-width:0}.ops-license-form button{justify-self:start}#ops-product-access{margin-top:24px;padding:24px}#ops-license-activate{margin-top:20px}@media(max-width:650px){.ops-license-form{grid-template-columns:1fr}}

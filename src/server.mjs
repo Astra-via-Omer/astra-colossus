@@ -21,6 +21,7 @@ import { ChristopherLearning } from './christopherLearning.mjs';
 import { demoInput, demoExamples } from './christopherFixtures.mjs';
 import { ChristopherWorkspace } from './christopherWorkspace.mjs';
 import { christopherShell } from './christopherShell.mjs';
+import { ProductAccess } from './productAccess.mjs';
 
 async function boundedJson(stream, limit, upstream = false) {
   const chunks = []; let size = 0;
@@ -38,6 +39,7 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
   const monitoring = new UsageMonitor(config, fetcher);
   const media = new MediaObserver(config.media, fetcher);
   const control = new ControlPlane(config, fetcher, endpointFetcher, controlStore), activeControllers = new Map();
+  const productAccess = new ProductAccess(control);
   const christopherLearning = new ChristopherLearning(control.store, { captureEnabled: config.christopherCaptureEnabled, retentionReady: config.christopherRetentionReady });
   const christopherWorkspace = new ChristopherWorkspace(fetcher);
   let inflight = 0, controlInflight = 0, draining = false;
@@ -85,7 +87,7 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
     const id = sessionId(req);
     if (!id) fail(401, 'unauthorized', 'Sign in with your Astra account.');
     const session = await sessions.get(id);
-    return { ...requireConsoleAccess(await userFor(session.token)), expiresAt: session.expiresAt };
+    return { ...requireConsoleAccess(await userFor(session.token)), expiresAt: session.expiresAt, systemId: 'colossus', productVerified: true };
   }
   const hasRegistry = () => !!(config.engineBucket || (config.serviceKey && config.supabaseUrl) || (config.engineFile && !config.production));
   const profile = identity => ({ user: { id: identity.id, email: identity.email, name: identity.name, role: identity.role },
@@ -98,7 +100,7 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
     if (clientHeader && !client) fail(401, 'service_key_invalid', 'Supply a valid Colossus system key.');
     const scoped = bearer?.startsWith('cs_') ? await control.authenticateKey(bearer) : null;
     if (scoped) return scoped;
-    const attach = identity => client ? { ...identity, systemId: client.systemId, keyId: client.keyId, allowedModels: client.allowedModels,
+    const attach = identity => client ? { ...identity, productVerified: true, systemId: client.systemId, keyId: client.keyId, allowedModels: client.allowedModels,
       requireGroup: client.requireGroup, organizationIds: client.organizationIds, registrationProviderIds: client.registrationProviderIds } : identity;
     const serviceId = () => 'service-' + createHash('sha256').update('colossus-usage\0').update(bearer).digest('hex').slice(0, 12);
     if (config.adminKey && equalSecret(bearer, config.adminKey)) return attach({ kind: 'service', id: serviceId(), admin: true, explicitAdmin: true });
@@ -191,7 +193,8 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
       if (method === 'GET' && asset) { operation = 'console'; res.writeHead(200, { 'Content-Type': `${asset[1]}; charset=utf-8` }); return res.end(await readFile(new URL(asset[0], import.meta.url))); }
       const privateAssets = { '/admin/christopher': ['christopher.html', 'text/html'], '/admin/christopher.js': ['christopher-ui.js', 'text/javascript'], '/admin/christopher.css': ['christopher.css', 'text/css'], '/admin/christopher-gravity.js': ['christopher-gravity.js', 'text/javascript'], '/admin/christopher-report.js': ['christopher-report.js', 'text/javascript'], '/admin/christopher-pattern.js': ['christopher-pattern.js', 'text/javascript'] };
       if (method === 'GET' && Object.hasOwn(privateAssets, url.pathname)) {
-        operation = 'christopher_private_ui'; requireChristopherAdmin(await browserIdentity(req));
+        operation = 'christopher_private_ui'; const identity = await browserIdentity(req); requireChristopherAdmin(identity);
+        await productAccess.authorize(identity, 'christopher');
         const [file, type] = privateAssets[url.pathname];
         let content = await readFile(new URL(file, import.meta.url), 'utf8');
         if (file === 'christopher.html') content = christopherShell(content, await readFile(new URL('console.html', import.meta.url), 'utf8'));
@@ -263,11 +266,14 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
         operation = 'control_plane'; const actor = requireConsoleAdmin(await browserIdentity(req));
         if (method === 'GET' && url.pathname === '/v1/control') return json(res, await control.snapshot());
         if (method === 'GET' && url.pathname === '/v1/control/organizations') return json(res, { organizations: await control.store.organizations() });
+        if (method === 'GET' && url.pathname === '/v1/control/product-access') return json(res, await productAccess.snapshot(actor));
         if (!['POST', 'PATCH'].includes(method)) fail(405, 'method_not_allowed', 'Use the supported operations control method.');
         if (!(req.headers['content-type'] || '').startsWith('application/json')) fail(415, 'content_type', 'Use application/json.');
         const body = await boundedJson(req, 32768);
         if (!body || typeof body !== 'object' || Array.isArray(body)) fail(400, 'invalid_request', 'Supply a JSON object.');
         const path = url.pathname.slice('/v1/control/'.length).split('/');
+        if (path.length === 1 && path[0] === 'product-licenses') return json(res, { license: await productAccess.saveLicense(body, actor) });
+        if (path.length === 1 && path[0] === 'product-access') return json(res, { policy: await productAccess.activate(body, actor) });
         if (path.length === 1 && ['providers', 'models', 'systems', 'integrations', 'jobs', 'groups'].includes(path[0])) return json(res, { record: await control.save(path[0], body, actor) });
         if (path.length === 1 && path[0] === 'keys' && method === 'POST') return json(res, await control.issueKey(body, actor), 201);
         if (path.length === 3 && ['providers', 'integrations'].includes(path[0]) && path[2] === 'check') return json(res, await control.checkConnection(path[0], path[1], actor));
@@ -302,6 +308,7 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
         return json(res, { updated: true });
       }
       const identity = await authenticate(req);
+      await productAccess.authorize(identity, url.pathname.startsWith('/v1/christopher') ? 'christopher' : null);
       const activity = req.headers['x-colossus-activity'];
       if (activity !== undefined) {
         if (!identity.keyId || typeof activity !== 'string' || !/^[a-z][a-z0-9._:-]{0,119}$/.test(activity) || !activity.startsWith(identity.systemId + '.'))
@@ -476,7 +483,7 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
   server.requestTimeout = Math.min(config.timeout, 30000);
   server.headersTimeout = 10000;
   server.keepAliveTimeout = 5000;
-  return { server, registry, sessions, monitoring, control, christopherLearning, drain() { draining = true; server.close(); }, get inflight() { return inflight; } };
+  return { server, registry, sessions, monitoring, control, productAccess, christopherLearning, drain() { draining = true; server.close(); }, get inflight() { return inflight; } };
 }
 const normalizedQuote = s => s.replace(/\s+/g, ' ').trim();
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

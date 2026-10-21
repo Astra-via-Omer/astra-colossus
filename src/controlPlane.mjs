@@ -16,6 +16,7 @@ const publicRecord = value => {
   return { ...visible, ...(Object.hasOwn(value, 'credential') || envAlias ? { credentialConfigured: !!credential || !!envAlias || value.native === 'vertex-media', credentialSource: value.native === 'vertex-media' ? 'runtime' : envAlias && !credential ? 'managed' : credential ? 'vault' : 'none' } : {}) };
 };
 const systemSeeds = [
+  ['colossus', 'Colossus', 'https://colossus.astra-via.com', 'Astra model gateway and mathematical runtime'],
   ['workflow', 'Workflow', 'https://workspace.astra-via.com', 'Evidence and document workflows'],
   ['enigma', 'Enigma', 'https://enigma.astra-via.com', 'News and temporal intelligence'],
   ['lab', 'Lab', 'https://lab.astra-via.com', 'Research and model evaluation'],
@@ -205,6 +206,8 @@ export class ControlPlane {
     const organizationId = identity.kind === 'account' && (identity.keyId || group?.organizationId) ? await this.store.organizationFor(identity.id) : null;
     if (group?.organizationId && group.organizationId !== organizationId) fail(403, 'organization_denied', 'This group requires active membership in its approved organization.');
     if (identity.organizationIds?.length && !identity.organizationIds.includes(organizationId)) fail(403, 'organization_denied', 'This system key does not grant your organization.');
+    if (identity.productAccess && identity.productAccess.groupId !== group?.id)
+      fail(403, 'product_license_required', 'Group membership changed after product authorization. Retry with a matching license.');
     return { group, organizationId };
   }
   async assignedRoute(identity, body, task = 'chat', activity = '') {
