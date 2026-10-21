@@ -43,6 +43,7 @@ jobs:
           test "$(curl --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1:4002/admin/christopher)" = '401'
           test "$(curl --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1:4002/admin/christopher.js)" = '401'
           test "$(curl --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1:4002/admin/christopher-gravity.js)" = '401'
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1:4002/admin/christopher-report.js)" = '401'
           test "$(curl --silent --output /dev/null --write-out '%{http_code}' -H 'Authorization: Bearer synthetic-ci-key' http://127.0.0.1:4002/v1/christopher)" = '403'
       - name: Save checked image
         if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || inputs.deploy)

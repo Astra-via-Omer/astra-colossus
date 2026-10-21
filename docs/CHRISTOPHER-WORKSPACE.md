@@ -43,23 +43,59 @@ continue to apply to any future training intake.
 ## What the real-document fingerprint establishes
 
 Every accepted claim is retained. Each source quotation and cross-reference is
-matched against its saved source ID, global section/page index or cited source
-page and whitespace-normalized source text. Paths retain source name, page or
+matched against its saved source ID, physical source page (or global section index for a legacy claim without a source ID) and whitespace-normalized source text. Paths retain source name, page or
 row locator, quotation, source family and the Workspace relationship type.
 `supports`, `challenges` and `context` remain reported model relationships;
 quote matching does not independently verify them. Existing explicit
 claim-to-claim relationships are carried with their types. Shared citations
 remain common-origin evidence, not extra independent votes.
 
-A PDF statement remains a source assertion. Its number/unit phrases are shown
+A PDF statement remains a source assertion. Its number/unit phrases, including magnitude suffixes such as `1.8M vehicles`, are shown verbatim
 as **asserted quantities**, not silently turned into observations. Entity and
 event-time alignment, independent measurements and validated formal numerical
 relations are separate required features. A quote-matched assertion remains
 unresolved; missing anchors and incomparable source identities stay visible.
 The numerical gap is null until a legitimate formal input exists. Earlier
-Workspace rubric scores are preserved under technical detail and are never
-mapped into a new physical distance or truth probability. Structured math
+Workspace rubric scores and explanations are visible in the Reality Gap report and the selected-claim detail. They are never mapped into a new physical distance or truth probability. Structured math
 inputs still use Christopher's exact interval/finite-state core.
+
+## Reality Gap report and pattern comparisons
+
+The Gravity Well remains the primary view. A visible **Reality Gap** link leads
+to the report directly below it. Search and state filters update both the graph
+and report counts. Selecting a graph/list claim updates its ratings, rule,
+pattern comparison, assessment, next check and evidence paths together.
+
+The report preserves three separate results:
+
+* **Source review / assessed evidence gap:** the saved per-claim Workspace
+  `distance`, identity/support/reasoning ratings, importance, assessment and
+  next check. Its original rubric is
+  `round(100 × (1 − (0.2 × identity + 0.6 × support + 0.2 × reasoning) / 2))`.
+  Scores are displayed as saved, not recomputed. The overview shows their
+  per-claim range, score coverage and rating distributions; it does not invent
+  an overall reality percentage. Missing scores remain unscored; a recorded
+  zero remains zero and is not independent truth validation.
+* **Formal mathematical gap:** the exact core's conditional lower/upper bounds,
+  units, required relation, signed residual and assumptions. Counts describe
+  how many claims can be evaluated. Values in different units are not averaged.
+  No formal relation or comparable measurement means an unresolved gap.
+* **Learned numerical pattern:** only an active, authorized reference with the
+  exact relation/context/unit fingerprint key is comparable. Display its
+  observed training range, median, median absolute deviation, independent
+  case/source-group count, data class and held-out evaluation provenance.
+  Within/outside/overlapping classifications and absolute midpoint difference
+  are descriptive floating-point statistics, not formal gap bounds or policy
+  findings. PDF assertions have no such numerical fingerprint. No reference is
+  fabricated or trained when a PDF is opened. References are rechecked on
+  focus and periodically; revoked/expired references are removed from display.
+
+Saved executive overview/findings/risks/actions are retained with the same
+claim-number validation as Workspace. They are labelled as the original model
+interpretation for the entire review, even when the current graph is filtered.
+Links to a filtered-out claim are disabled until filters are cleared. No extra
+inference is needed. No separately stored "theoretical gap" or trained pattern
+for natural-language claims was found in the source review contract.
 
 ## Gravity Well and navigation
 
