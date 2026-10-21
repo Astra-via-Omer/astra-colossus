@@ -84,15 +84,15 @@ test('group organization choices remain browser-admin only and do not change mem
 
 test('Christopher UI, assets and APIs require live administrator status and reject cross-origin writes', async t => {
   const app = await start(t);
-  for (const path of ['/admin/christopher', '/admin/christopher.js', '/admin/christopher.css', '/v1/christopher', '/v1/christopher/experiments']) assert.equal((await app.call(path)).status, 401, path);
+  for (const path of ['/admin/christopher', '/admin/christopher.js', '/admin/christopher.css', '/admin/christopher-report.js', '/v1/christopher', '/v1/christopher/experiments']) assert.equal((await app.call(path)).status, 401, path);
   assert.equal((await app.call('/v1/christopher', undefined, 'GET', undefined, { Authorization: 'Bearer synthetic-machine-key' })).status, 403);
   const { cookie } = await app.login();
-  for (const path of ['/admin/christopher', '/admin/christopher.js', '/admin/christopher.css', '/v1/christopher', '/v1/christopher/experiments']) assert.equal((await app.call(path, cookie)).status, 200, path);
+  for (const path of ['/admin/christopher', '/admin/christopher.js', '/admin/christopher.css', '/admin/christopher-report.js', '/v1/christopher', '/v1/christopher/experiments']) assert.equal((await app.call(path, cookie)).status, 200, path);
   assert.equal((await app.call('/admin/christopher-gravity.js', cookie)).status, 200);
   assert.equal((await app.call('/v1/christopher/experiments/demo', cookie, 'POST', {}, { Origin: 'https://foreign.example' })).status, 403);
   app.state.user.app_metadata.role = 'participant';
   assert.equal((await app.call('/admin/christopher-gravity.js', cookie)).status, 403);
-  for (const path of ['/admin/christopher', '/admin/christopher.js', '/admin/christopher.css', '/v1/christopher', '/v1/christopher/experiments']) assert.equal((await app.call(path, cookie)).status, 403, path);
+  for (const path of ['/admin/christopher', '/admin/christopher.js', '/admin/christopher.css', '/admin/christopher-report.js', '/v1/christopher', '/v1/christopher/experiments']) assert.equal((await app.call(path, cookie)).status, 403, path);
   const capabilities = await (await app.call('/v1/capabilities', cookie)).json(); assert.equal(capabilities.christopher, undefined);
   const models = await (await app.call('/v1/models', cookie)).json(); assert(!models.data.some(m => m.id === 'christopher'));
   assert.equal((await app.call('/app', cookie)).status, 200);

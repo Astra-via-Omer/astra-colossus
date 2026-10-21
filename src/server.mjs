@@ -189,7 +189,7 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
       Object.assign(assets, { '/astra-display.js': ['astra-display.js', 'text/javascript'], '/display-contract.mjs': ['display-contract.mjs', 'text/javascript'], '/astra-display.css': ['astra-display.css', 'text/css'] });
       const asset = Object.hasOwn(assets, url.pathname) ? assets[url.pathname] : undefined;
       if (method === 'GET' && asset) { operation = 'console'; res.writeHead(200, { 'Content-Type': `${asset[1]}; charset=utf-8` }); return res.end(await readFile(new URL(asset[0], import.meta.url))); }
-      const privateAssets = { '/admin/christopher': ['christopher.html', 'text/html'], '/admin/christopher.js': ['christopher-ui.js', 'text/javascript'], '/admin/christopher.css': ['christopher.css', 'text/css'], '/admin/christopher-gravity.js': ['christopher-gravity.js', 'text/javascript'] };
+      const privateAssets = { '/admin/christopher': ['christopher.html', 'text/html'], '/admin/christopher.js': ['christopher-ui.js', 'text/javascript'], '/admin/christopher.css': ['christopher.css', 'text/css'], '/admin/christopher-gravity.js': ['christopher-gravity.js', 'text/javascript'], '/admin/christopher-report.js': ['christopher-report.js', 'text/javascript'] };
       if (method === 'GET' && Object.hasOwn(privateAssets, url.pathname)) {
         operation = 'christopher_private_ui'; requireChristopherAdmin(await browserIdentity(req));
         const [file, type] = privateAssets[url.pathname];

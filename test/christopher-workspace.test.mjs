@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { ChristopherWorkspace, workspaceFingerprint } from '../src/christopherWorkspace.mjs';
+import { ChristopherWorkspace, workspaceFingerprint, assertedQuantityPhrases } from '../src/christopherWorkspace.mjs';
 import { christopherShell } from '../src/christopherShell.mjs';
 import { savedWorkspaceFixture } from './fixtures/workspace-review.mjs';
 const administrator = { kind: 'account', id: 'owner', admin: true, astraAdmin: true, token: 'owner-account-token' };
@@ -21,6 +21,38 @@ test('wrong source identity, unmatched quotations and fabricated references do n
   assert.equal(result.fingerprint.features[0].status, 'incomparable'); assert.equal(result.fingerprint.features[1].status, 'missing');
   assert(!result.fingerprint.observations.some(o => o.quote.includes('invented')));
   assert.equal(result.fingerprint.features[2].sourceRecordIds.length, 1);
+});
+test('primary claims use physical source pages while legacy claims retain global section numbering', () => {
+  const review = savedWorkspaceFixture(), quote = 'The same words appear on several pages.';
+  review.analysis.corpus.push({ page: 3, sourcePage: 2, sourceId: 'pilot-log', sourceName: 'Synthetic log excerpt.pdf', location: 'Page 2', text: quote });
+  review.analysis.corpus[1].text += ' ' + quote;
+  review.analysis.claims = [{ text: 'Second source, second physical page', quote, sourceId: 'pilot-log', sourceName: 'Synthetic log excerpt.pdf', page: 2 }, { text: 'Legacy global section', quote, page: 3 }];
+  const result = workspaceFingerprint(review, 'review');
+  assert(result.fingerprint.features.every(f => f.grounding.sourceTraceable));
+  assert.equal(result.fingerprint.observations.length, 1);
+  assert.equal(result.fingerprint.observations[0].sourcePage, 2);
+  assert.equal(result.fingerprint.observations[0].sourceId, 'pilot-log');
+  review.analysis.claims[0].page = 9;
+  assert.equal(workspaceFingerprint(review, 'review').fingerprint.features[0].grounding.sourceTraceable, false);
+});
+test('saved review scores, assessment, importance and executive claim references are preserved without rescoring', () => {
+  const review = savedWorkspaceFixture(); Object.assign(review.analysis.claims[0], { identity: 2, support: 0, reasoning: 1, distance: 70, importance: 5, assessment: 'Concrete source evidence is missing.' });
+  review.analysis.executiveBrief = { overview: 'Original saved overview.', takeaways: [{ text: 'Source finding', claimNumbers: [1] }], risks: [{ text: 'Still unverified', claimNumbers: [2] }], actions: [{ text: 'Inspect event log', claimNumbers: [1, 2] }] };
+  const result = workspaceFingerprint(review, 'review'), feature = result.fingerprint.features[0];
+  assert.equal(feature.workspaceAssessment.rubricGap, 70); assert.equal(feature.workspaceAssessment.importance, 5); assert.equal(feature.assessment, review.analysis.claims[0].assessment);
+  assert.equal(feature.gap, null); assert.equal(feature.observed, null);
+  assert.deepEqual(result.reviewReport.executiveBrief, review.analysis.executiveBrief); assert.equal(result.reviewReport.reviewId, 'review'); assert.equal(feature.source.quoteMatched, true);
+  review.analysis.executiveBrief.actions[0].claimNumbers = [999];
+  assert.equal(workspaceFingerprint(review, 'review').reviewReport.executiveBrief, null);
+  delete review.analysis.claims[0].distance;
+  assert.equal(workspaceFingerprint(review, 'review').fingerprint.features[0].workspaceAssessment.rubricGap, null);
+});
+test('asserted quantities retain magnitude suffixes and units verbatim without becoming measurements', () => {
+  const phrases = assertedQuantityPhrases('1.8M vehicles, 250 GWh, $2.5 billion, 1,200 kg/year, 15 minutes and 40%.');
+  assert.deepEqual(phrases, ['1.8M vehicles', '250 GWh', '$2.5 billion', '1,200 kg/year', '15 minutes', '40%']);
+  const review = savedWorkspaceFixture(); review.analysis.claims[0].text = 'The forecast is 1.8M vehicles.';
+  const feature = workspaceFingerprint(review, 'review').fingerprint.features[0];
+  assert.deepEqual(feature.assertedQuantities, ['1.8M vehicles']); assert.equal(feature.gap, null); assert.equal(feature.observed, null);
 });
 test('claim inspection is bounded and never silently substitutes a truncated map', () => {
   assert.equal(workspaceFingerprint(savedWorkspaceFixture(500), 'review').fingerprint.features.length, 500);

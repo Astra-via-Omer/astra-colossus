@@ -7,6 +7,28 @@ const validId = id => typeof id === 'string' && /^[a-zA-Z0-9_-]{1,120}$/.test(id
 const normalized = value => String(value || '').replace(/\s+/g, ' ').trim();
 const hash = value => createHash('sha256').update(value).digest('hex').slice(0, 24);
 const boundedText = (value, max) => typeof value === 'string' ? value.slice(0, max) : '';
+export function assertedQuantityPhrases(text) {
+  // Display source phrases verbatim. No numeric normalization or math intake.
+  const number = String.raw`(?:[$€£]\s*|(?:USD|EUR|GBP)\s*)?-?\d+(?:[,.]\d+)*(?:e[+-]?\d+)?`;
+  const magnitude = String.raw`(?:\s*(?:thousand|million|billion|trillion)\b|\s*[kmbt](?=$|[\s,.;:/)]))?`;
+  const unit = String.raw`(?:\s*(?:%|percent\b|(?:vehicles?|cars?|customers?|users?|artifacts?|employees?|projects?|units?|minutes?|seconds?|hours?|days?|years?|tonnes?|tons?|kg|g|km|MW|GW|kW|W|MWh|GWh|TWh|kWh|Wh|USD|EUR|GBP)(?:/(?:year|day|hour|kg|kWh))?\b))?`;
+  return [...boundedText(text, 5000).matchAll(new RegExp(number + magnitude + unit, 'gi'))].slice(0, 20).map(m => m[0]);
+}
+// Match the existing Workspace executive-brief contract, retaining valid text.
+function executiveBrief(value, count) {
+  if (!value || typeof value.overview !== 'string' || !value.overview.trim() || value.overview.length > 600) return null;
+  const result = { overview: value.overview };
+  for (const key of ['takeaways', 'risks', 'actions']) {
+    if (!Array.isArray(value[key]) || value[key].length < 1 || value[key].length > 3) return null;
+    const items = [];
+    for (const item of value[key]) {
+      if (!item || typeof item.text !== 'string' || !item.text.trim() || item.text.length > 260 || !Array.isArray(item.claimNumbers) || !item.claimNumbers.length || item.claimNumbers.length > 5 || !item.claimNumbers.every(n => Number.isInteger(n) && n >= 1 && n <= count)) return null;
+      items.push({ text: item.text, claimNumbers: [...new Set(item.claimNumbers)] });
+    }
+    result[key] = items;
+  }
+  return result;
+}
 export class ChristopherWorkspace {
   constructor(fetcher) { this.fetcher = fetcher; this.active = 0; }
   async read(identity, path, signal) {
@@ -45,8 +67,9 @@ export function workspaceFingerprint(review, reviewId) {
   const records = [], recordByKey = new Map(), links = [], features = [], groups = new Map();
   function locate(claim, citation = false) {
     const quote = boundedText(claim.quote, 5000);
-    const page = analysis.corpus.find(p => (claim.sourceId ? p.sourceId === claim.sourceId : !citation && p.page === claim.page) &&
-      (citation ? p.sourcePage === claim.sourcePage : p.page === claim.page) && quote && normalized(p.text).includes(normalized(quote)));
+    // Workspace remaps accepted claims to physical source pages. Only legacy
+    // claims without a source ID use the global section index.
+    const page = analysis.corpus.find(p => (claim.sourceId ? p.sourceId === claim.sourceId && p.sourcePage === (citation ? claim.sourcePage : claim.page) : !citation && p.page === claim.page) && quote && normalized(p.text).includes(normalized(quote)));
     if (!page) return null;
     const key = hash(JSON.stringify([page.sourceId, page.sourcePage, quote]));
     if (!recordByKey.has(key)) {
@@ -71,7 +94,7 @@ export function workspaceFingerprint(review, reviewId) {
     for (const relation of claim.relationships || []) if (Number.isInteger(relation.claimNumber) && relation.claimNumber >= 1 && relation.claimNumber <= analysis.claims.length && relation.claimNumber !== i + 1 && ['supports', 'challenges', 'depends_on', 'context'].includes(relation.type)) links.push({ from: id, to: 'claim_' + relation.claimNumber, type: relation.type, verified: 'reported_relationship' });
     const identityMismatch = !!claim.sourceId && !analysis.corpus.some(p => p.sourceId === claim.sourceId);
     const status = identityMismatch ? 'incomparable' : primary ? 'uncertain' : 'missing';
-    const quantities = [...boundedText(claim.text, 5000).matchAll(/(?:[$€£]\s*)?-?\d+(?:[,.]\d+)*(?:\s*(?:%|percent|million|billion|minutes?|seconds?|hours?|kg|MW|kWh|USD|EUR))?/gi)].slice(0, 20).map(m => m[0]);
+    const quantities = assertedQuantityPhrases(claim.text);
     features.push({ id, number: i + 1, text: boundedText(claim.text, 5000), kind: 'document_claim', status, groupId, expected: { statement: boundedText(claim.text, 5000), independentObservation: 'Required before a numerical reality-gap finding.' }, observed: null, gap: null,
       sourceRecordIds: [...new Set(references)], grounding: { complete: false, sourceTraceable: !!primary, paths, missingVariables: ['independent_observation', 'formal_constraint', 'entity_time_alignment'] },
       checks: [{ key: 'source_trace', label: 'Source quotation', expected: 'Exact source location', observed: primary ? 'Matched to the saved page' : 'No exact source anchor', state: primary ? 'matching' : 'missing' },
@@ -79,9 +102,13 @@ export function workspaceFingerprint(review, reviewId) {
         { key: 'observation', label: 'Independent observation', expected: 'Evidence about what happened', observed: 'The PDF states a claim; no independent measurement supplied', state: 'missing' },
         { key: 'relation', label: 'Mathematical relation', expected: 'Defined variables, units and rule', observed: 'No validated numerical relation supplied', state: 'missing' }],
       assertedQuantities: quantities, assessment: boundedText(claim.assessment, 5000), nextCheck: boundedText(claim.nextCheck, 5000),
-      workspaceAssessment: { identity: claim.identity ?? null, support: claim.support ?? null, reasoning: claim.reasoning ?? null, rubricGap: claim.distance ?? null, interpretation: 'Existing Workspace model rubric; not a Christopher mathematical distance or truth probability.' } });
+      source: { sourceId, sourceName: boundedText(claim.sourceName || primary?.sourceName, 300), sourcePage: claim.page, locator: boundedText(claim.location || primary?.locator, 500), quote: boundedText(claim.quote, 5000), quoteMatched: !!primary },
+      workspaceAssessment: { identity: claim.identity ?? null, support: claim.support ?? null, reasoning: claim.reasoning ?? null, rubricGap: claim.distance ?? null, importance: claim.importance ?? null, interpretation: 'Existing Workspace model rubric; not a Christopher mathematical distance or truth probability.' } });
   }
   return { model: { id: 'christopher', version: '0.1.0' }, mode: 'workspace_inspection', dataClass: review.fixture === true ? 'synthetic_workspace_fixture' : 'real_workspace_review', review: { id: reviewId, name: boundedText(review.name, 300), completedAt: analysis.completedAt, claimCount: features.length, sourceCount: new Set(analysis.corpus.map(p => p.sourceId)).size, excludedCount: analysis.excluded?.length || 0 },
+    reviewReport: { origin: ORIGIN, reviewId, focus: boundedText(analysis.focus, 2000), executiveBrief: executiveBrief(analysis.executiveBrief, features.length), executiveStatus: analysis.executiveStatus === 'unavailable' ? 'unavailable' : 'saved',
+      crossReferenceStatus: analysis.crossReferenceStatus === 'partial' ? 'partial' : analysis.crossReferenceStatus === 'complete' ? 'complete' : 'unspecified', crossReferenceIssues: (analysis.crossReferenceIssues || []).slice(0, 100).map(s => boundedText(s, 2000)),
+      rubric: { name: 'Workspace evidence-gap index', formula: 'round(100 × (1 − (0.2 × identity + 0.6 × support + 0.2 × reasoning) / 2))', provenance: 'Saved Workspace assessment. Per-claim scores and explanations are retained, not rescored by Christopher.', interpretation: '0 = fewer assessed gaps; 100 = greater assessed gaps. This model assessment is not a truth probability or a formal measured deviation.' } },
     scope: { entityId: 'document:' + review.sourceId, contextId: 'workspace-review:' + reviewId, windowId: analysis.completedAt || 'unspecified' },
     fingerprint: { version: 'scoped-document-signature@0.1.0', features, observations: records, excluded: [], counts: Object.fromEntries([...new Set(features.map(f => f.status))].map(s => [s, features.filter(f => f.status === s).length])),
       interpretation: 'Claims and source quotations are mapped, not promoted to independent measurements. No numerical reality gap is fabricated.' },
