@@ -1,6 +1,6 @@
 (() => {
   const byId = id => document.getElementById(id);
-  let catalog, usage, verified = false, consoleRole, accessVersion = 0, refreshInFlight = false, editor, confirmation, selectedView = 'overview';
+  let catalog, usage, productAccess, verified = false, consoleRole, accessVersion = 0, refreshInFlight = false, editor, confirmation, selectedView = 'overview';
   const discovered = new Map(), peopleDirectory = new Map();
   let groupUsers, groupOrganizations, groupSearchTimer, groupSearchVersion = 0;
   const titles = { overview: 'Overview', models: 'Models', groups: 'User groups', providers: 'Providers', systems: 'Astra systems', keys: 'API access', processes: 'Processes', analytics: 'Costs & usage', integrations: 'Integrations', engines: 'Engine studio', access: 'Users & access', guide: 'Documentation' };
@@ -155,6 +155,49 @@
     byId('ops-key-rows').replaceChildren(...catalog.keys.map(key => { const row = node('tr'), active = keyEnabled(key); row.append(cell(identityCell(key.name, key.prefix)), cell(systemName(key.systemId)), cell(key.allowedModels.join(', ')), cell(stamp(key.expiresAt)), cell(statusBadge(active ? 'enabled' : key.enabled ? 'expired' : 'revoked')), actionCell(active ? [['Revoke', () => confirm('Revoke system key?', `Requests using ${key.name} will be denied immediately. Issue a new key if the system needs access again.`, () => api(`/v1/control/keys/${key.id}/revoke`, {}))]] : [])); return row; }));
     emptyRow(byId('ops-key-rows'), 6, 'No system keys issued yet. Existing shared credentials continue to work.');
   }
+  function renderProductAccess() {
+    if (!productAccess || !catalog) return;
+    let panel = byId('ops-product-access');
+    if (!panel) { panel = node('section', 'ops-panel'); panel.id = 'ops-product-access'; byId('view-keys').append(panel); }
+    // Keep an in-progress grant form intact during the normal periodic refresh.
+    if (!panel.children.length) {
+      const heading = node('div', 'panel-heading'); heading.append(node('h2', '', 'Product licenses'));
+      const state = node('p'); state.id = 'ops-license-state';
+      panel.append(heading, state, node('p', '', 'Each account needs explicit group membership and a separate license for each Astra product. Licenses do not grant models outside the group or product key.'));
+      const form = node('form', 'ops-license-form'); form.id = 'ops-license-form';
+      for (const [name, label, type] of [['userId', 'Approved group member', 'select'], ['productId', 'Astra product', 'select'], ['startsAt', 'Starts on (UTC)', 'date'], ['expiresAt', 'Expires on (UTC)', 'date']]) {
+        const wrapper = node('label', '', label), input = node(type === 'select' ? 'select' : 'input'); input.name = name; input.required = true;
+        if (type === 'date') input.type = type;
+        wrapper.append(input); form.append(wrapper);
+      }
+      form.elements.startsAt.value = new Date().toISOString().slice(0, 10);
+      form.elements.expiresAt.value = new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10);
+      const submit = node('button', '', 'Grant / update license'); submit.type = 'submit'; form.append(submit);
+      form.addEventListener('submit', event => {
+        event.preventDefault(); const data = new FormData(form), userId = data.get('userId'), productId = data.get('productId');
+        const group = catalog.groups.find(group => group.enabled && group.memberIds.includes(userId));
+        const previous = productAccess.licenses.find(license => license.userId === userId && license.productId === productId);
+        if (!group) return notice('Assign this account to an active group first.', true);
+        const body = { userId, productId, groupId: group.id, status: 'active', startsAt: data.get('startsAt') + 'T00:00:00Z', expiresAt: data.get('expiresAt') + 'T00:00:00Z', expectedUpdatedAt: previous?.updatedAt || null };
+        confirm('Grant this product license?', `${peopleDirectory.get(userId)?.email || userId} will be licensed for ${systemName(productId)} in ${group.name}, until ${data.get('expiresAt')} UTC. Group and model restrictions still apply.`, () => api('/v1/control/product-licenses', body));
+      });
+      panel.append(form);
+      const tableWrap = node('div', 'table-scroll'), table = node('table', 'ops-table'), head = node('thead'), row = node('tr');
+      for (const title of ['ACCOUNT', 'PRODUCT / GROUP', 'LICENSE', 'EXPIRES', 'ACTION']) row.append(node('th', '', title));
+      const rows = node('tbody'); rows.id = 'ops-license-rows'; head.append(row); table.append(head, rows); tableWrap.append(table); panel.append(tableWrap);
+      const activate = button('Activate license enforcement', () => confirm('Activate product license enforcement?', 'Every Colossus processing request will require a verified Astra product, active end user, explicit group membership and a separate active product license. Unlicensed accounts and service-only clients will be denied. Operator management remains available.', () => api('/v1/control/product-access', { enabled: true })), 'secondary'); activate.id = 'ops-license-activate'; panel.append(activate);
+    }
+    byId('ops-license-state').textContent = productAccess.policy.enabled ? 'Enforced · product licenses are checked on every processing request.' : 'Setup mode · separate product-license enforcement is not active yet. Existing access rules still apply.';
+    byId('ops-license-activate').hidden = productAccess.policy.enabled;
+    const form = byId('ops-license-form');
+    const choices = (select, pairs) => { const value = select.value; select.replaceChildren(...pairs.map(([id, label]) => new Option(label, id))); if (pairs.some(([id]) => id === value)) select.value = value; };
+    choices(form.elements.userId, [['', 'Choose a group member'], ...[...new Set(catalog.groups.filter(group => group.enabled).flatMap(group => group.memberIds))].map(id => [id, peopleDirectory.get(id)?.email || id])]);
+    choices(form.elements.productId, [['', 'Choose a product'], ...productAccess.products.map(id => [id, systemName(id)])]);
+    byId('ops-license-rows').replaceChildren(...productAccess.licenses.map(license => {
+      const row = node('tr'); row.append(cell(identityCell(peopleDirectory.get(license.userId)?.email || license.userId, license.userId)), cell(identityCell(systemName(license.productId), license.groupId)), cell(license.status), cell(stamp(license.expiresAt)), actionCell(license.status === 'revoked' ? [] : [['Revoke', () => confirm('Revoke this product license?', 'New requests for this account and product will be denied when license enforcement is active. Other products keep their own licenses.', () => api('/v1/control/product-licenses', { ...license, status: 'revoked', expectedUpdatedAt: license.updatedAt }))]])); return row;
+    }));
+    emptyRow(byId('ops-license-rows'), 5, 'No product licenses issued. Group membership alone does not issue a license.');
+  }
   function renderProcesses() {
     const query = byId('process-search').value.toLowerCase(), status = byId('process-state').value;
     const records = (usage?.processes || []).filter(process => (!status || process.status === status) && `${process.requestId} ${process.systemId} ${process.actor.email} ${process.actor.id} ${process.calls.map(call => call.route).join(' ')}`.toLowerCase().includes(query));
@@ -168,12 +211,12 @@
     byId('ops-integration-cards').replaceChildren(...catalog.integrations.map(integration => connectionCard(integration, 'integrations')));
     if (!catalog.integrations.length) byId('ops-integration-cards').append(empty('Register your first data API, bucket location or training controller.'));
   }
-  function renderAll() { renderGroups(); renderOverview(); renderModels(); renderProviders(); renderSystems(); renderKeys(); renderProcesses(); renderIntegrations();
+  function renderAll() { renderGroups(); renderOverview(); renderModels(); renderProviders(); renderSystems(); renderKeys(); renderProductAccess(); renderProcesses(); renderIntegrations();
     if (catalog) document.dispatchEvent(new CustomEvent('colossus:catalog', { detail: catalog.models.filter(model => model.enabled && catalog.providers.some(provider => provider.id === model.providerId && provider.enabled && (provider.credentialConfigured || provider.allowAnonymous))) }));
   }
   async function refresh() {
     if (!verified || refreshInFlight) return; const version = accessVersion; refreshInFlight = true; byId('ops-refresh').disabled = true;
-    try { const [registry, activity, users, organizations] = await Promise.all([api('/v1/control'), api('/v1/monitoring?days=1'), api('/v1/access/users?search=&offset=0').catch(() => null), api('/v1/control/organizations').catch(() => null)]); if (!verified || version !== accessVersion) return; catalog = registry; usage = activity; groupUsers = users; groupOrganizations = organizations; for (const user of users?.users || []) peopleDirectory.set(user.id, user); byId('ops-storage').textContent = registry.storage === 'firestore' ? 'Database connected' : 'Local preview · volatile'; byId('ops-environment').lastChild.textContent = registry.storage === 'firestore' ? 'PRODUCTION GATEWAY' : 'LOCAL PREVIEW'; byId('ops-api-example').textContent = byId('ops-api-example').textContent.replace('https://colossus.astra-via.com', registry.gateway.origin); renderAll(); }
+    try { const [registry, activity, users, organizations, licenses] = await Promise.all([api('/v1/control'), api('/v1/monitoring?days=1'), api('/v1/access/users?search=&offset=0').catch(() => null), api('/v1/control/organizations').catch(() => null), api('/v1/control/product-access')]); if (!verified || version !== accessVersion) return; catalog = registry; usage = activity; productAccess = licenses; groupUsers = users; groupOrganizations = organizations; for (const user of users?.users || []) peopleDirectory.set(user.id, user); byId('ops-storage').textContent = registry.storage === 'firestore' ? 'Database connected' : 'Local preview · volatile'; byId('ops-environment').lastChild.textContent = registry.storage === 'firestore' ? 'PRODUCTION GATEWAY' : 'LOCAL PREVIEW'; byId('ops-api-example').textContent = byId('ops-api-example').textContent.replace('https://colossus.astra-via.com', registry.gateway.origin); renderAll(); }
     catch (error) { if (verified) notice(error.message, true); }
     finally { refreshInFlight = false; byId('ops-refresh').disabled = false; }
   }
@@ -347,7 +390,7 @@
     else { byId('ops-storage').textContent = 'Participant engine access'; byId('ops-environment').lastChild.textContent = 'ENGINE ROOM'; }
   });
   document.addEventListener('colossus:usage', event => { if (verified && event.detail.days === 1 && !event.detail.userId) { usage = event.detail; renderOverview(); renderModels(); renderProcesses(); } });
-  document.addEventListener('colossus:locked', () => { accessVersion++; consoleRole = undefined; verified = false; groupSearchVersion++; clearTimeout(groupSearchTimer); editor?.groupForm?.dispose(); catalog = undefined; usage = undefined; groupUsers = undefined; groupOrganizations = undefined; peopleDirectory.clear(); discovered.clear(); clearKey(); byId('ops-editor-fields').replaceChildren(); byId('ops-process-detail-body').replaceChildren(); editor = null; confirmation = null; for (const id of ['overview-models', 'overview-calls', 'overview-tokens', 'overview-cost']) byId(id).textContent = '—'; for (const dialog of document.querySelectorAll('.ops-dialog[open]')) dialog.close(); for (const id of ['ops-model-rows', 'ops-group-rows', 'ops-key-rows', 'ops-process-rows', 'ops-provider-cards', 'ops-system-cards', 'ops-integration-cards', 'ops-external-jobs', 'overview-audit', 'overview-processes', 'overview-providers', 'ecosystem-nodes']) byId(id).replaceChildren(); byId('ops-account').textContent = 'Access verification required'; byId('ops-storage').textContent = 'Actions paused'; });
+  document.addEventListener('colossus:locked', () => { accessVersion++; consoleRole = undefined; verified = false; groupSearchVersion++; clearTimeout(groupSearchTimer); editor?.groupForm?.dispose(); catalog = undefined; usage = undefined; productAccess = undefined; byId('ops-product-access')?.remove(); groupUsers = undefined; groupOrganizations = undefined; peopleDirectory.clear(); discovered.clear(); clearKey(); byId('ops-editor-fields').replaceChildren(); byId('ops-process-detail-body').replaceChildren(); editor = null; confirmation = null; for (const id of ['overview-models', 'overview-calls', 'overview-tokens', 'overview-cost']) byId(id).textContent = '—'; for (const dialog of document.querySelectorAll('.ops-dialog[open]')) dialog.close(); for (const id of ['ops-model-rows', 'ops-group-rows', 'ops-key-rows', 'ops-process-rows', 'ops-provider-cards', 'ops-system-cards', 'ops-integration-cards', 'ops-external-jobs', 'overview-audit', 'overview-processes', 'overview-providers', 'ecosystem-nodes']) byId(id).replaceChildren(); byId('ops-account').textContent = 'Access verification required'; byId('ops-storage').textContent = 'Actions paused'; });
   const timer = setInterval(() => { if (document.visibilityState === 'visible') void refresh(); }, 30000);
   window.addEventListener('pagehide', () => { clearInterval(timer); clearTimeout(groupSearchTimer); groupSearchVersion++; editor?.groupForm?.dispose(); clearKey(); });
 })();
