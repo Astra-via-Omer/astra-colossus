@@ -34,7 +34,8 @@ test('>= signatures have the same orientation as equivalent negated <= constrain
 test('administrator check excludes legacy implicit admins and ordinary model keys', () => {
   assert(!isChristopherAdmin({ kind: 'service', admin: true }));
   assert(!isChristopherAdmin({ kind: 'account', admin: false }));
-  assert(isChristopherAdmin({ kind: 'account', admin: true }));
+  assert(!isChristopherAdmin({ kind: 'account', admin: true, astraAdmin: false }));
+  assert(isChristopherAdmin({ kind: 'account', admin: true, astraAdmin: true }));
   assert(isChristopherAdmin({ kind: 'service', admin: true, explicitAdmin: true }));
 });
 function learning() { const store = new ControlStore({}, () => { throw Error('No network'); }); return { store, model: new ChristopherLearning(store) }; }

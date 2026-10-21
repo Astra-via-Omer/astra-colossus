@@ -7,7 +7,9 @@ The administrator console adds a private experiment link. The HTML, JS, CSS,
 manifest, math, fingerprint and dataset APIs all enforce administrator access
 on the server. A legacy key that implicitly administers old APIs is explicitly
 insufficient; an explicit administrator key or live administrator account is
-required. Ordinary users do not see Christopher in capabilities or model lists.
+required. A product-specific Lab administrator role cannot confer global Astra
+administrator access to the experiment. Ordinary users do not see Christopher
+in capabilities or model lists.
 
 ## What a fingerprint means
 

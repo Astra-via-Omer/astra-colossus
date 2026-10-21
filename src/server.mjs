@@ -64,7 +64,7 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
         (callingSystem === 'workflow' && (user.app_metadata?.workspace_scope === 'workflow' || user.app_metadata?.workspace_approved === false)) ||
         !['admin', 'participant', 'reader', 'viewer'].includes(role)) fail(403, 'access_denied', 'This account cannot access Colossus.');
     const name = user.user_metadata?.full_name || user.user_metadata?.name;
-    return { kind: 'account', admin: role === 'admin', role, id: user.id,
+    return { kind: 'account', admin: role === 'admin', astraAdmin: user.app_metadata?.role === 'admin', role, id: user.id,
       email: typeof user.email === 'string' ? user.email.slice(0, 254) : '',
       name: typeof name === 'string' ? name.slice(0, 80) : '', workspaceScope: user.app_metadata?.workspace_scope, token };
   }

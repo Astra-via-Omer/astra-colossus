@@ -11,7 +11,7 @@ async function start(t) {
   const app = createService(configuration({ COLOSSUS_API_KEYS_JSON: '["local-service-test"]', COLOSSUS_ADMIN_KEY: 'local-admin-test',
     ASTRA_PROVIDER_CONFIG_JSON: '{"key":"unused-provider-test","model":"unused-model"}', SUPABASE_URL: 'https://accounts.example', SUPABASE_ANON_KEY: 'public-key' }), {
     logger: entry => logs.push(entry), fetcher: async (url, options) => {
-      if (url.endsWith('/auth/v1/user')) return Response.json({ id: 'user1', email: actor.email, app_metadata: { role: options.headers.Authorization === 'Bearer participant-token' ? 'participant' : 'admin', disabled } });
+      if (url.endsWith('/auth/v1/user')) return Response.json({ id: 'user1', email: actor.email, app_metadata: { role: ['Bearer participant-token', 'Bearer lab-only-admin-token'].includes(options.headers.Authorization) ? 'participant' : 'admin', lab: { role: 'admin' }, disabled } });
       unexpectedRequests++; throw Error('No provider or source HTTP fetch is allowed for native computation.');
     } });
   await new Promise(resolve => app.server.listen(0, '127.0.0.1', resolve));
@@ -70,4 +70,12 @@ test('CPU checks do not dilute provider-time cost statistics', () => {
   const call = (execution, durationMs, usd) => ({ execution, durationMs, usage: tokenUsage({ prompt_tokens: 1, completion_tokens: 0, total_tokens: 1, prompt_cache_hit_tokens: 0 }), cost: { usd, complete: true } });
   const summary = summarize([{ status: 'completed', durationMs: 61000, calls: [call('local_cpu', 60000, 0), call(undefined, 1000, 1)] }]);
   assert.equal(summary.providerDurationMs, 1000); assert.equal(summary.costPerProviderMinuteUsd, 60);
+});
+test('a Lab-only administrator role cannot grant the private Astra administrator experiment', async t => {
+  const app = await start(t);
+  const key = await app.control.issueKey({ name: 'Lab only', systemId: 'lab', requireGroup: false, allowedModels: ['christopher'] }, actor);
+  for (const path of ['/v1/christopher', '/v1/christopher/experiments']) assert.equal((await app.call(path, undefined, 'lab-only-admin-token', { 'x-colossus-service-key': key.oneTimeKey })).status, 403);
+  assert.equal((await app.call('/v1/christopher/evaluate', example(), 'lab-only-admin-token', { 'x-colossus-service-key': key.oneTimeKey })).status, 403);
+  const capabilities = await (await app.call('/v1/capabilities', undefined, 'lab-only-admin-token', { 'x-colossus-service-key': key.oneTimeKey })).json();
+  assert.equal(capabilities.christopher, undefined);
 });
