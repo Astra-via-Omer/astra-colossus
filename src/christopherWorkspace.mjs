@@ -9,9 +9,9 @@ const hash = value => createHash('sha256').update(value).digest('hex').slice(0, 
 const boundedText = (value, max) => typeof value === 'string' ? value.slice(0, max) : '';
 export function assertedQuantityPhrases(text) {
   // Display source phrases verbatim. No numeric normalization or math intake.
-  const number = String.raw`(?:[$€£]\s*|(?:USD|EUR|GBP)\s*)?-?\d+(?:[,.]\d+)*(?:e[+-]?\d+)?`;
+  const number = String.raw`(?:[$€£]\s*|(?:USD|EUR|GBP|SGD|AUD|CAD|JPY|CHF|ILS|NOK|DKK|SEK)\s*)?-?\d+(?:[,.]\d+)*(?:e[+-]?\d+)?`;
   const magnitude = String.raw`(?:\s*(?:thousand|million|billion|trillion)\b|\s*[kmbt](?=$|[\s,.;:/)]))?`;
-  const unit = String.raw`(?:\s*(?:%|percent\b|(?:vehicles?|cars?|customers?|users?|artifacts?|employees?|projects?|units?|minutes?|seconds?|hours?|days?|years?|tonnes?|tons?|kg|g|km|MW|GW|kW|W|MWh|GWh|TWh|kWh|Wh|USD|EUR|GBP)(?:/(?:year|day|hour|kg|kWh))?\b))?`;
+  const unit = String.raw`(?:\s*(?:%|percent\b|(?:vehicles?|cars?|members?|people|enterprises?|customers?|users?|artifacts?|employees?|projects?|units?|minutes?|seconds?|hours?|days?|months?|years?|tonnes?|tons?|kg|g|km|MW|GW|kW|W|MWh|GWh|TWh|kWh|Wh|USD|EUR|GBP|SGD|AUD|CAD|JPY|CHF|ILS|NOK|DKK|SEK)(?:/(?:year|day|hour|kg|kWh))?\b))?`;
   return [...boundedText(text, 5000).matchAll(new RegExp(number + magnitude + unit, 'gi'))].slice(0, 20).map(m => m[0]);
 }
 // Match the existing Workspace executive-brief contract, retaining valid text.

@@ -50,6 +50,7 @@ test('saved review scores, assessment, importance and executive claim references
 test('asserted quantities retain magnitude suffixes and units verbatim without becoming measurements', () => {
   const phrases = assertedQuantityPhrases('1.8M vehicles, 250 GWh, $2.5 billion, 1,200 kg/year, 15 minutes and 40%.');
   assert.deepEqual(phrases, ['1.8M vehicles', '250 GWh', '$2.5 billion', '1,200 kg/year', '15 minutes', '40%']);
+  assert.deepEqual(assertedQuantityPhrases('SGD 3,089 in 12 months for 300K members and 5 enterprises.'), ['SGD 3,089', '12 months', '300K members', '5 enterprises']);
   const review = savedWorkspaceFixture(); review.analysis.claims[0].text = 'The forecast is 1.8M vehicles.';
   const feature = workspaceFingerprint(review, 'review').fingerprint.features[0];
   assert.deepEqual(feature.assertedQuantities, ['1.8M vehicles']); assert.equal(feature.gap, null); assert.equal(feature.observed, null);
