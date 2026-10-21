@@ -87,6 +87,19 @@ Evaluation suites contain 1–8 cases and run sequentially within the request de
 
 ## API
 
+Christopher is a private administrator-only mathematical experiment at
+`/admin/christopher`, with a structured API at `POST /v1/christopher/evaluate`.
+It computes exact conditional gap
+bounds for affine numeric claims over interval sets or finite candidate worlds.
+Explicit evidence paths, scope and unit checks, model grants and process
+monitoring apply. It makes no provider calls. See
+[the mathematical contract and validation guide](docs/CHRISTOPHER.md) for the
+supported cases, current limits, local demo and remaining empirical validation.
+The [private fingerprint and learning guide](docs/CHRISTOPHER-EXPERIMENT.md)
+describes signed relation plots, a fitted numerical reference and guarded
+shadow intake. Ordinary users cannot access the experiment; automatic traffic
+capture and production model promotion are disabled.
+
 Authenticate with `Authorization: Bearer <service key or shared-account access token>`. Browser sessions use the host-only cookie. All responses carry `X-Request-Id`. API errors have `{error:{code,message,requestId}}`.
 
 | Method | Path | Purpose |

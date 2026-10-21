@@ -85,7 +85,7 @@ test('native media retains system grants, paused routes and atomic spending admi
  assert.equal((await call(granted.oneTimeKey)).status,200);assert.equal(generated,1);
  const snapshot=await app.control.snapshot(),wallet=snapshot.systems.find(system=>system.id==='enigma').spending;
  assert.equal(wallet.reservedUsd,0);assert.equal(wallet.tokens,135);assert(Math.abs(wallet.spentUsd-0.0001845)<1e-10);
- assert.equal(snapshot.providers.find(provider=>provider.native).credentialSource,'runtime');
+  assert.equal(snapshot.providers.find(provider=>provider.native==='vertex-media').credentialSource,'runtime');
  await app.control.save('providers',{id:'managed-vertex-media',name:'Google Vertex AI',enabled:false},actor);
  assert.equal((await call(granted.oneTimeKey)).status,503);assert.equal(generated,1);
  await assert.rejects(app.control.save('models',{id:'broadcast-media',name:'Native',model:'another-model'},actor),{code:'native_configuration'});

@@ -15,6 +15,10 @@ import { providerRequest, providerResult, AnthropicStream } from './providerAdap
 import { MediaObserver, mediaCostUsd } from './media.mjs';
 import { accountDisplay, DisplayError } from './account-display.mjs';
 import { validDisplayPreferences } from './display-contract.mjs';
+import { CHRISTOPHER, evaluateChristopher } from './christopher.mjs';
+import { fingerprint, requireChristopherAdmin, isChristopherAdmin } from './christopherFingerprint.mjs';
+import { ChristopherLearning } from './christopherLearning.mjs';
+import { demoInput, demoExamples } from './christopherFixtures.mjs';
 
 async function boundedJson(stream, limit, upstream = false) {
   const chunks = []; let size = 0;
@@ -32,6 +36,7 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
   const monitoring = new UsageMonitor(config, fetcher);
   const media = new MediaObserver(config.media, fetcher);
   const control = new ControlPlane(config, fetcher, endpointFetcher, controlStore), activeControllers = new Map();
+  const christopherLearning = new ChristopherLearning(control.store, { captureEnabled: config.christopherCaptureEnabled, retentionReady: config.christopherRetentionReady });
   let inflight = 0, controlInflight = 0, draining = false;
   const json = (res, body, status = 200) => {
     res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
@@ -93,7 +98,7 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
     const attach = identity => client ? { ...identity, systemId: client.systemId, keyId: client.keyId, allowedModels: client.allowedModels,
       requireGroup: client.requireGroup, organizationIds: client.organizationIds, registrationProviderIds: client.registrationProviderIds } : identity;
     const serviceId = () => 'service-' + createHash('sha256').update('colossus-usage\0').update(bearer).digest('hex').slice(0, 12);
-    if (config.adminKey && equalSecret(bearer, config.adminKey)) return attach({ kind: 'service', id: serviceId(), admin: true });
+    if (config.adminKey && equalSecret(bearer, config.adminKey)) return attach({ kind: 'service', id: serviceId(), admin: true, explicitAdmin: true });
     if (config.keys.some(key => equalSecret(bearer, key))) return attach({ kind: 'service', id: serviceId(), admin: !config.adminKey });
     if (bearer) return attach(await userFor(bearer, client?.systemId || 'colossus'));
     return attach(await browserIdentity(req));
@@ -181,6 +186,11 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
       Object.assign(assets, { '/astra-display.js': ['astra-display.js', 'text/javascript'], '/display-contract.mjs': ['display-contract.mjs', 'text/javascript'], '/astra-display.css': ['astra-display.css', 'text/css'] });
       const asset = Object.hasOwn(assets, url.pathname) ? assets[url.pathname] : undefined;
       if (method === 'GET' && asset) { operation = 'console'; res.writeHead(200, { 'Content-Type': `${asset[1]}; charset=utf-8` }); return res.end(await readFile(new URL(asset[0], import.meta.url))); }
+      const privateAssets = { '/admin/christopher': ['christopher.html', 'text/html'], '/admin/christopher.js': ['christopher-ui.js', 'text/javascript'], '/admin/christopher.css': ['christopher.css', 'text/css'] };
+      if (method === 'GET' && Object.hasOwn(privateAssets, url.pathname)) {
+        operation = 'christopher_private_ui'; requireChristopherAdmin(await browserIdentity(req));
+        const [file, type] = privateAssets[url.pathname]; res.writeHead(200, { 'Content-Type': `${type}; charset=utf-8` }); return res.end(await readFile(new URL(file, import.meta.url)));
+      }
       if (draining) fail(503, 'draining', 'Colossus is shutting down. Retry another instance.');
       const management = url.pathname.startsWith('/v1/control') || url.pathname === '/v1/monitoring' || url.pathname === '/session' || url.pathname === '/v1/preferences';
       if (management ? controlInflight >= 8 : inflight >= config.maxInflight) { res.setHeader('Retry-After', '2'); fail(429, 'capacity', 'This instance is at capacity. Retry shortly.'); }
@@ -297,11 +307,34 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
         operation = 'capabilities'; return json(res, { service: 'colossus', admin: identity.admin,
           engineCreation: hasRegistry(),
           streaming: 'sse', realtimeSession: false,
+          ...(isChristopherAdmin(identity) ? { christopher: CHRISTOPHER } : {}),
           routes: await control.routes(identity),
           observer: { status: config.media ? 'ready' : 'unconfigured', engine: 'broadcast-observation@1.0.0', model: config.media?.model, input: 'PCM16 16 kHz mono WAV and timestamped JPEG frames', maxSampleMs: 4000, verification: 'Observation and claim detection only; no truth score.' } });
       }
       if (method === 'GET' && url.pathname === '/v1/models') { operation = 'models'; return json(res, { object: 'list', data: (await control.routes(identity)).flatMap(route => [...new Set([route.id, route.model])].filter(name => name === route.id || route.id === 'astra-default').map(name => ({ id: name, object: 'model', owned_by: 'colossus', capabilities: route.capabilities, task: route.task }))) }); }
       if (method === 'GET' && url.pathname === '/v1/engines') { operation = 'engines'; return json(res, { engines: await registry.list() }); }
+      if (url.pathname.startsWith('/v1/christopher')) requireChristopherAdmin(identity);
+      if (method === 'GET' && url.pathname === '/v1/christopher') { operation = 'christopher_manifest'; return json(res, CHRISTOPHER); }
+      if (method === 'GET' && url.pathname === '/v1/christopher/demo') return json(res, demoInput(url.searchParams.get('scenario') || 'uncertain'));
+      if (url.pathname.startsWith('/v1/christopher/experiments')) {
+        operation = 'christopher_experiment'; await control.ensure();
+        const organizationId = identity.kind === 'account' ? await control.store.organizationFor(identity.id) : null;
+        const namespace = christopherLearning.namespace(identity, organizationId);
+        if (method === 'GET' && url.pathname === '/v1/christopher/experiments') return json(res, await christopherLearning.snapshot(namespace));
+        if (method === 'DELETE' && /^\/v1\/christopher\/experiments\/examples\/[a-f0-9-]{36}$/.test(url.pathname)) return json(res, await christopherLearning.remove(namespace, url.pathname.split('/').at(-1)));
+        if (method === 'POST') {
+          if (!(req.headers['content-type'] || '').startsWith('application/json')) fail(415, 'content_type', 'Use application/json.');
+          const example = await boundedJson(req, 64000);
+          if (url.pathname === '/v1/christopher/experiments/examples') return json(res, await christopherLearning.save(namespace, example), 201);
+          if (url.pathname === '/v1/christopher/experiments/train') return json(res, await christopherLearning.train(namespace));
+          if (url.pathname === '/v1/christopher/experiments/demo') {
+            if ((await christopherLearning.examples(namespace)).length) fail(409, 'dataset_exists', 'Use the current dataset, or erase its examples before creating another synthetic demo.');
+            for (const item of demoExamples()) await christopherLearning.save(namespace, item);
+            return json(res, await christopherLearning.train(namespace), 201);
+          }
+        }
+        fail(404, 'not_found', 'Unknown private experiment operation.');
+      }
       if (method !== 'POST') fail(404, 'not_found', 'Unknown API route.');
       if (!(req.headers['content-type'] || '').startsWith('application/json')) fail(415, 'content_type', 'Use application/json.');
       const body = await boundedJson(req, config.bodyLimit);
@@ -311,7 +344,7 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
         const result = await control.registerLabModel(body, identity);
         return json(res, result, result.replay ? 200 : 201);
       }
-      const inferenceOperations = { '/v1/chat/completions': 'chat', '/v1/embeddings': 'embedding', '/v1/runs': 'run_engine', '/v1/engines/test': 'test_engine', '/v1/evaluations': 'evaluate', '/v1/media/observe': 'observe_media' };
+      const inferenceOperations = { '/v1/chat/completions': 'chat', '/v1/embeddings': 'embedding', '/v1/runs': 'run_engine', '/v1/engines/test': 'test_engine', '/v1/evaluations': 'evaluate', '/v1/media/observe': 'observe_media', '/v1/christopher/evaluate': 'christopher_evaluate', '/v1/christopher/fingerprint': 'christopher_fingerprint' };
       if (Object.hasOwn(inferenceOperations, url.pathname)) {
         operation = inferenceOperations[url.pathname];
         if (['test_engine', 'evaluate'].includes(operation) && !identity.admin) fail(403, 'admin_required', 'Only admins can test or evaluate engines.');
@@ -319,7 +352,7 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
           if(!['admin','participant'].includes(identity.role)) fail(403,'analyst_required','Audio/video observation requires an analyst account.');
           if(!equalSecret(req.headers['x-enigma-media-key'],config.mediaIngestKey)) fail(403,'media_gateway_required','Account media analysis must come through the authorized Enigma gateway.');
         }
-        const access = await control.groupAccess(identity);
+        const access = await control.groupAccess(identity, !operation.startsWith('christopher_'));
         identity.groupId = access.group?.id || null; identity.organizationId = access.organizationId;
         process = await monitoring.start(identity, requestId, operation);
         await control.startProcess(process); activeControllers.set(requestId, controller);
@@ -329,6 +362,21 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
             if (checking || controller.signal.aborted) return; checking = true;
             try { if (await control.cancellation(requestId)) controller.abort('admin_cancelled'); } catch {} finally { checking = false; }
           }, 3000); cancellationTimer.unref();
+        }
+      }
+      if (['/v1/christopher/evaluate', '/v1/christopher/fingerprint'].includes(url.pathname)) {
+        const route = await control.christopherRoute(identity);
+        Object.assign(process, route.routing);
+        const reservation = await control.reserve(identity, route, {}, requestId, 1, 0);
+        const call = monitoring.call(process, route, CHRISTOPHER);
+        call.execution = 'local_cpu'; call.reservation = reservation; call.providerId = route.providerId;
+        try {
+          const result = await (url.pathname.endsWith('/fingerprint') ? fingerprint : evaluateChristopher)(body, { signal: controller.signal });
+          monitoring.finishCall(call, 'completed', { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, prompt_cache_hit_tokens: 0 }, 200);
+          return await complete({ requestId, ...result });
+        } catch (error) {
+          monitoring.finishCall(call, controller.signal.aborted ? 'cancelled' : 'failed', { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, prompt_cache_hit_tokens: 0 });
+          throw error;
         }
       }
       if (url.pathname === '/v1/embeddings') {
@@ -362,6 +410,7 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
         }
         const data = providerResult(route, await boundedJson(Readable.fromWeb(response.body), 8000000, true));
         monitoring.finishCall(call, 'completed', data.usage, response.status);
+        if (new URL(route.baseUrl).hostname === 'api.deepseek.com') christopherLearning.shadow(identity, route, body, data);
         return await complete({ ...data, colossus: { ...route.routing, model: route.alias, pricing: route.pricing || null } });
       }
       if (url.pathname === '/v1/engines') {
@@ -419,7 +468,7 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
   server.requestTimeout = Math.min(config.timeout, 30000);
   server.headersTimeout = 10000;
   server.keepAliveTimeout = 5000;
-  return { server, registry, sessions, monitoring, control, drain() { draining = true; server.close(); }, get inflight() { return inflight; } };
+  return { server, registry, sessions, monitoring, control, christopherLearning, drain() { draining = true; server.close(); }, get inflight() { return inflight; } };
 }
 const normalizedQuote = s => s.replace(/\s+/g, ' ').trim();
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

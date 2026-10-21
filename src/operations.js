@@ -45,7 +45,7 @@
 
   function renderOverview() {
     if (!catalog) return;
-    const available = catalog.models.filter(model => model.enabled && catalog.providers.some(provider => provider.id === model.providerId && provider.enabled && (provider.credentialConfigured || provider.allowAnonymous)));
+    const available = catalog.models.filter(model => model.enabled && catalog.providers.some(provider => provider.id === model.providerId && provider.enabled && (provider.native || provider.credentialConfigured || provider.allowAnonymous)));
     byId('overview-models').textContent = count(available.length); byId('overview-model-detail').textContent = `${catalog.models.length} registered · ${catalog.providers.length} provider connections`;
     byId('nav-models-count').textContent = String(catalog.models.length);
     const totals = usage?.totals;
@@ -69,8 +69,8 @@
       element.append(node('span', 'node-symbol', { workflow: '◈', enigma: '⌁', lab: '⌘', evidence: '◇', observer: '◎' }[system.id]), label, node('span', 'node-indicator' + (enrolled ? ' enrolled' : ''))); return element;
     }));
     const providers = catalog.providers.slice(0, 3).map(provider => {
-      const element = node('div', 'provider-summary'), label = node('div'); label.append(node('strong', '', provider.name), node('small', '', `${catalog.models.filter(model => model.providerId === provider.id).length} model routes · ${provider.credentialSource === 'runtime' ? 'Runtime identity' : provider.credentialSource === 'managed' ? 'Managed credential' : provider.credentialConfigured ? 'Vault credential' : provider.allowAnonymous ? 'Anonymous endpoint' : 'Needs credential'}`));
-      element.append(providerMark(provider), label, statusBadge(!provider.enabled ? 'paused' : provider.health?.status || (provider.credentialConfigured || provider.allowAnonymous ? 'configured' : 'needs key'))); return element;
+      const element = node('div', 'provider-summary'), label = node('div'); label.append(node('strong', '', provider.name), node('small', '', `${catalog.models.filter(model => model.providerId === provider.id).length} model routes · ${provider.native === 'christopher' ? 'Colossus CPU runtime' : provider.credentialSource === 'runtime' ? 'Runtime identity' : provider.credentialSource === 'managed' ? 'Managed credential' : provider.credentialConfigured ? 'Vault credential' : provider.allowAnonymous ? 'Anonymous endpoint' : 'Needs credential'}`));
+      element.append(providerMark(provider), label, statusBadge(!provider.enabled ? 'paused' : provider.health?.status || (provider.native || provider.credentialConfigured || provider.allowAnonymous ? 'configured' : 'needs key'))); return element;
     });
     for (const [name, kind] of [['OpenAI', 'openai'], ['Anthropic', 'anthropic']]) if (providers.length < 3 && !catalog.providers.some(provider => provider.kind === kind)) {
       const element = node('div', 'provider-summary'), label = node('div'); label.append(node('strong', '', name), node('small', '', 'Ready to connect')); element.append(providerMark({ kind, name }), label, button('＋ Connect', () => openEditor('providers', null, kind))); providers.push(element);
@@ -124,10 +124,10 @@
   }
   function connectionCard(record, collection) {
     const element = node('article', 'connection-card'), top = node('div', 'connection-card-top'), title = node('div');
-    title.append(node('h2', '', record.name), node('small', '', collection === 'providers' ? record.native ? 'Native Vertex broadcast adapter' : record.protocol === 'anthropic' ? 'Anthropic Messages' : record.kind === 'gpu' ? 'GPU · compatible serving' : 'OpenAI compatible' : { rest: 'HTTP data API', gcs: 'Google Cloud Storage', s3: 'S3 storage', training: 'External training controller' }[record.kind]));
+    title.append(node('h2', '', record.name), node('small', '', collection === 'providers' ? record.native ? record.native === 'christopher' ? 'Colossus mathematical runtime' : 'Native Vertex broadcast adapter' : record.protocol === 'anthropic' ? 'Anthropic Messages' : record.kind === 'gpu' ? 'GPU · compatible serving' : 'OpenAI compatible' : { rest: 'HTTP data API', gcs: 'Google Cloud Storage', s3: 'S3 storage', training: 'External training controller' }[record.kind]));
     top.append(collection === 'providers' ? providerMark(record) : node('span', 'provider-mark gpu-mark', record.kind === 'training' ? '⌘' : '◇'), title, statusBadge(!record.enabled ? 'paused' : record.health?.status || 'registered')); element.append(top);
     element.append(node('p', 'connection-endpoint', record.baseUrl || record.endpoint));
-    element.append(node('p', record.credentialConfigured ? 'connection-key-status' : '', record.credentialSource === 'runtime' ? '◇ Google runtime identity · no API key' : record.credentialSource === 'managed' ? '◇ Credential supplied by managed configuration' : record.credentialConfigured ? '◇ Credential encrypted in the vault' : record.allowAnonymous ? 'Public endpoint · no credential' : 'No credential stored'));
+    element.append(node('p', record.credentialConfigured ? 'connection-key-status' : '', record.native === 'christopher' ? 'Runs inside Colossus · no provider API key' : record.credentialSource === 'runtime' ? '◇ Google runtime identity · no API key' : record.credentialSource === 'managed' ? '◇ Credential supplied by managed configuration' : record.credentialConfigured ? '◇ Credential encrypted in the vault' : record.allowAnonymous ? 'Public endpoint · no credential' : 'No credential stored'));
     element.append(node('p', '', record.health ? `${stamp(record.health.checkedAt)} · ${record.health.latencyMs} ms${record.health.httpStatus ? ' · HTTP ' + record.health.httpStatus : ''}` : collection === 'providers' ? 'No connection check has been recorded.' : record.description || 'Registered connection metadata.'));
     const actions = node('div', 'actions'); actions.append(button('Configure', () => openEditor(collection, record), 'secondary'));
     if (!record.native && (collection === 'providers' || ['rest', 'training'].includes(record.kind))) actions.append(button(collection === 'providers' ? 'Check & discover' : 'Check endpoint', () => checkConnection(collection, record), 'secondary'));
@@ -223,8 +223,8 @@
     field('name', 'Name', record?.name || (collection === 'providers' ? presets[providerKind][0] : ''), { required: true });
     if (collection !== 'keys') field('id', collection === 'models' ? 'Model alias' : 'Registry ID', record?.id || '', { required: true, disabled: !!record, placeholder: collection === 'models' ? 'astra-reasoning' : 'readable-unique-id' });
     if (record?.native) {
-      byId('ops-editor-fields').append(node('p', 'editor-note', `Native broadcast observation · ${record.model || record.baseUrl}. Provider, model and modality pricing are configured by deployment. Use Pause / Enable to control new admissions.`));
-      byId('ops-editor-note').textContent = 'You can change the display name here. This native route uses /v1/media/observe and retains the Enigma gateway requirement for account calls.';
+      byId('ops-editor-fields').append(node('p', 'editor-note', record.native === 'christopher' ? `Native mathematical checks · ${record.model || record.baseUrl}. Implementation is configured by deployment. Use Pause / Enable to control new admissions.` : `Native broadcast observation · ${record.model || record.baseUrl}. Provider, model and modality pricing are configured by deployment. Use Pause / Enable to control new admissions.`));
+      byId('ops-editor-note').textContent = record.native === 'christopher' ? 'Christopher runs structured mathematical checks at /v1/christopher/evaluate inside Colossus. Its implementation is versioned in the service; you can rename or pause it here.' : 'You can change the display name here. This native route uses /v1/media/observe and retains the Enigma gateway requirement for account calls.';
     } else if (collection === 'providers') {
       const kind = field('kind', 'Provider type', providerKind, { required: true, choices: Object.entries(presets).map(([key, value]) => [key, value[0]]) });
       const url = field('baseUrl', 'API base URL', record?.baseUrl || presets[providerKind][1], { required: true, wide: true, note: 'HTTPS only. Include /v1 if required by the provider. Private and metadata addresses are blocked.' });
@@ -338,6 +338,9 @@
   document.addEventListener('colossus:ready', event => {
     accessVersion++; consoleRole = event.detail.user.role; verified = consoleRole === 'admin';
     document.body.dataset.consoleRole = consoleRole;
+    let christopherLink = document.getElementById('christopher-private-link');
+    if (verified && !christopherLink) { christopherLink = node('a', '', '◈ Christopher experiment'); christopherLink.id = 'christopher-private-link'; christopherLink.href = '/admin/christopher'; document.querySelector('.ops-navigation').append(christopherLink); }
+    if (christopherLink) christopherLink.hidden = !verified;
     const hash = location.hash.slice(1);
     showView(aliases[hash] || hash || (verified ? 'overview' : 'engines'));
     if (verified) void refresh();

@@ -2,6 +2,8 @@ import { createHash, randomBytes, randomUUID, createCipheriv, createDecipheriv }
 import { ControlStore } from './controlStore.mjs';
 import { endpointUrl } from './endpoints.mjs';
 import { fail, resolveRoute, validateChat } from './config.mjs';
+import { CHRISTOPHER } from './christopher.mjs';
+import { isChristopherAdmin, requireChristopherAdmin } from './christopherFingerprint.mjs';
 
 const idPattern = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,119}$/;
 const id = value => { if (typeof value !== 'string' || !idPattern.test(value)) fail(400, 'invalid_id', 'Use a short ID containing letters, numbers, dots, underscores or hyphens.'); return value; };
@@ -42,6 +44,8 @@ export class ControlPlane {
       seeds.push(['models/' + alias, { id: alias, name: alias === 'astra-default' ? 'Astra Default' : alias, providerId, model: route.model, capabilities: route.capabilities, task: 'chat', maxTokens: 4000, pricing: route.pricing || null, enabled: true, createdAt: now(), updatedAt: now() }]);
     }
     if (this.config.freeGroupId) seeds.push(['groups/' + id(this.config.freeGroupId), { id: this.config.freeGroupId, name: 'Free Workspace PDF checking', enabled: true, modelIds: ['astra-default'], memberIds: [], organizationId: null, activityModels: {}, createdAt: now(), updatedAt: now() }]);
+    seeds.push(['providers/managed-christopher', { id: 'managed-christopher', name: 'astra-via mathematical runtime', kind: 'native', protocol: 'native', native: 'christopher', baseUrl: this.config.origin, enabled: true, createdAt: now(), updatedAt: now() }]);
+    seeds.push(['models/christopher', { id: 'christopher', name: CHRISTOPHER.name, providerId: 'managed-christopher', native: 'christopher', model: `christopher@${CHRISTOPHER.version}`, task: 'analysis', capabilities: ['structured'], maxTokens: 0, pricing: null, enabled: true, createdAt: now(), updatedAt: now() }]);
     if (this.config.media) {
       seeds.push(['providers/managed-vertex-media', { id: 'managed-vertex-media', name: 'Google Vertex AI', kind: 'vertex', protocol: 'vertex', native: 'vertex-media', baseUrl: 'https://aiplatform.googleapis.com', credential: null, enabled: true, createdAt: now(), updatedAt: now() }]);
       seeds.push(['models/broadcast-media', { id: 'broadcast-media', name: 'Broadcast observation', providerId: 'managed-vertex-media', native: 'vertex-media', model: this.config.media.model, task: 'observation', maxTokens: 1400, capabilities: ['text', 'audio', 'image'], pricing: null, enabled: true, createdAt: now(), updatedAt: now() }]);
@@ -266,7 +270,7 @@ export class ControlPlane {
     if (!registered) fail(400, 'unknown_model', 'Choose a configured model route.');
     const provider = (await this.store.get('providers/' + registered.providerId)).data;
     if (!registered.enabled || !provider?.enabled) fail(503, 'route_paused', 'This model or provider connection is paused.');
-    if (registered.native) fail(400, 'model_task', 'Use the native /v1/media/observe endpoint for this route.');
+    if (registered.native) fail(400, 'model_task', registered.native === 'christopher' ? 'Use /v1/christopher/evaluate for structured mathematical checks.' : 'Use the native /v1/media/observe endpoint for this route.');
     const key = this.credential(provider);
     if (!key && !provider.allowAnonymous) fail(503, 'provider_key_required', 'An administrator must add this provider credential.');
     return { alias, model: registered.model, providerId: provider.id, providerName: provider.name, protocol: provider.protocol,
@@ -279,7 +283,7 @@ export class ControlPlane {
     const { group } = identity.admin ? { group: null } : await this.groupAccess(identity, false);
     if (this.config.requireGroups && identity.kind === 'account' && !identity.admin && !group) return [];
     const [models, providers] = await Promise.all([this.store.list('models'), this.store.list('providers')]);
-    return models.filter(model => (!group || group.modelIds.includes(model.id)) && model.enabled && (!identity.allowedModels || identity.allowedModels.includes(model.id)) && providers.some(provider => provider.id === model.providerId && provider.enabled && (provider.credential || provider.envAlias || provider.allowAnonymous || provider.native)))
+    return models.filter(model => (model.native !== 'christopher' || isChristopherAdmin(identity)) && (!group || group.modelIds.includes(model.id)) && model.enabled && (!identity.allowedModels || identity.allowedModels.includes(model.id)) && providers.some(provider => provider.id === model.providerId && provider.enabled && (provider.credential || provider.envAlias || provider.allowAnonymous || provider.native)))
       .map(model => ({ id: model.id, model: model.model, capabilities: model.capabilities, task: model.task, providerId: model.providerId }));
   }
   async authenticateKey(token) {
@@ -322,6 +326,19 @@ export class ControlPlane {
   }
   async authorize(identity, alias) {
     if (identity.allowedModels && !identity.allowedModels.includes(alias)) fail(403, 'model_not_granted', 'This system key is not allowed to use this model route.');
+  }
+  async christopherRoute(identity) {
+    requireChristopherAdmin(identity);
+    const { group, organizationId } = await this.groupAccess(identity, false);
+    await this.authorize(identity, CHRISTOPHER.alias);
+    if (this.enabled) {
+      const model = (await this.store.get('models/christopher')).data;
+      const provider = (await this.store.get('providers/managed-christopher')).data;
+      if (!model?.enabled || !provider?.enabled) fail(503, 'route_paused', 'Christopher or its mathematical runtime is paused.');
+    }
+    return { alias: CHRISTOPHER.alias, model: `christopher@${CHRISTOPHER.version}`, providerId: 'managed-christopher', task: 'analysis',
+      pricing: { inputPerMillion: 0, cachedInputPerMillion: 0, outputPerMillion: 0 }, maxTokens: 0,
+      routing: { groupId: group?.id || null, organizationId, activity: identity.activity || '' } };
   }
   async mediaRoute(identity) {
     const { group } = await this.groupAccess(identity);
