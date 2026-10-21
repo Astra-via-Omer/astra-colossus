@@ -2,10 +2,12 @@
 
 Christopher 0.1.0 is a native mathematical model running inside the Colossus
 Node service. It takes structured measurements and claims, and computes
-conditional gap bounds. It exposes one authenticated API that Workflow,
-Enigma, Evidence, Observer and Lab can use; each product needs an adapter that
-maps its records to this common contract. Those product adapters are not part
-of this prototype. It is not a newly trained language model.
+conditional gap bounds. The current release is a private administrator-only
+experiment, with an evidence fingerprint view at `/admin/christopher`.
+Ordinary users and product keys cannot invoke or discover it. Product adapters
+and any later access expansion require a separate validated release. It is
+not a newly trained language model. See [the private experiment guide](CHRISTOPHER-EXPERIMENT.md)
+for fingerprints, numerical reference learning and permission-gated shadow intake.
 
 ## What the first implementation can check
 
@@ -94,11 +96,13 @@ classical model is the reference for any later comparison.
 `examples/christopher/r42.json`. `modelVersion` must be `0.1.0`.
 
 The seeded `christopher` model uses a native `analysis` task, separate from
-chat routes and prompt-engine manifests. Enable **Christopher mathematical
-checks** in the group's Models tab and explicitly grant `christopher` to the
-calling backend's scoped key. It cannot be selected as a chat model. Existing
-account roles, group and organization checks, provider/model/system pauses,
-key revocation, request limits and process cancellation remain in effect.
+chat routes and prompt-engine manifests. An active Astra administrator or an
+explicit administrator API key is required. An ordinary product key, legacy
+service key or group model grant cannot confer access. Admin experiment calls
+do not require a chat-group model assignment; any existing group pause and
+organization restrictions still apply. It cannot be selected as a chat model.
+Provider/model/system pauses, key revocation, request limits and process
+cancellation remain in effect.
 
 Runs create the existing durable process history without saving measurement
 values, source text or results. Call metadata identifies `local_cpu` execution.
@@ -128,8 +132,11 @@ to ignored `.local/christopher-validation/`. Timings measure the local host,
 not Google Cloud performance, accuracy, cost or a service-level guarantee.
 
 The `--serve` command leaves a loopback Colossus service on port 4014. It uses
-the synthetic bearer `christopher-local-demo`, memory storage, and disabled
-external providers. It has no production credentials. Test it with:
+the synthetic administrator bearer `christopher-local-demo`, memory storage,
+and disabled external providers. For browser QA, sign in locally with
+`admin@example.invalid` / `local-demo-only`, then open `/admin/christopher`.
+This synthetic account exists only in the local script, with no production
+credentials or accounts. Test it with:
 
 ```sh
 curl http://127.0.0.1:4014/v1/christopher/evaluate \

@@ -82,6 +82,20 @@ test('group organization choices remain browser-admin only and do not change mem
   app.state.user.app_metadata.role = 'viewer'; assert.equal((await app.call('/v1/control/organizations', cookie)).status, 403);
 });
 
+test('Christopher UI, assets and APIs require live administrator status and reject cross-origin writes', async t => {
+  const app = await start(t);
+  for (const path of ['/admin/christopher', '/admin/christopher.js', '/admin/christopher.css', '/v1/christopher', '/v1/christopher/experiments']) assert.equal((await app.call(path)).status, 401, path);
+  assert.equal((await app.call('/v1/christopher', undefined, 'GET', undefined, { Authorization: 'Bearer synthetic-machine-key' })).status, 403);
+  const { cookie } = await app.login();
+  for (const path of ['/admin/christopher', '/admin/christopher.js', '/admin/christopher.css', '/v1/christopher', '/v1/christopher/experiments']) assert.equal((await app.call(path, cookie)).status, 200, path);
+  assert.equal((await app.call('/v1/christopher/experiments/demo', cookie, 'POST', {}, { Origin: 'https://foreign.example' })).status, 403);
+  app.state.user.app_metadata.role = 'participant';
+  for (const path of ['/admin/christopher', '/admin/christopher.js', '/admin/christopher.css', '/v1/christopher', '/v1/christopher/experiments']) assert.equal((await app.call(path, cookie)).status, 403, path);
+  const capabilities = await (await app.call('/v1/capabilities', cookie)).json(); assert.equal(capabilities.christopher, undefined);
+  const models = await (await app.call('/v1/models', cookie)).json(); assert(!models.data.some(m => m.id === 'christopher'));
+  assert.equal((await app.call('/app', cookie)).status, 200);
+});
+
 test('personal display API requires an approved account cookie and same-origin writes, and saves only its own account field', async t => {
   const app = await start(t), choice = { version: 1, font: 'verdana', textSize: 22, textWeight: 'bold', spacing: 'roomy', contrast: 'high', motion: 'reduced' };
   assert.equal((await app.call('/v1/preferences')).status, 401);

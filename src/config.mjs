@@ -56,6 +56,7 @@ export function configuration(env = process.env) {
   if (env.NODE_ENV === 'production' && !origin.startsWith('https://')) throw Error('Production needs an HTTPS COLOSSUS_ORIGIN');
   if(env.COLOSSUS_MEDIA_INGEST_KEY && (env.COLOSSUS_MEDIA_INGEST_KEY.length<32 || env.COLOSSUS_MEDIA_INGEST_KEY.length>512 || /\s/.test(env.COLOSSUS_MEDIA_INGEST_KEY))) throw Error('Invalid media gateway credential');
   return { routes, keys, media: mediaConfiguration(env), mediaIngestKey:env.COLOSSUS_MEDIA_INGEST_KEY || '', adminKey: env.COLOSSUS_ADMIN_KEY || '', origin,
+    christopherCaptureEnabled: env.COLOSSUS_CHRISTOPHER_CAPTURE === 'true', christopherRetentionReady: env.COLOSSUS_CHRISTOPHER_RETENTION_READY === 'true',
     requireGroups: env.COLOSSUS_REQUIRE_GROUPS !== 'false',
     freeGroupId: env.COLOSSUS_FREE_GROUP_ID || 'astra-free-pdf',
     maxInflight: integer(env, 'COLOSSUS_MAX_INFLIGHT', 16, 1, 1000),

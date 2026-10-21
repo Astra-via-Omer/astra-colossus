@@ -3,6 +3,7 @@ import { ControlStore } from './controlStore.mjs';
 import { endpointUrl } from './endpoints.mjs';
 import { fail, resolveRoute, validateChat } from './config.mjs';
 import { CHRISTOPHER } from './christopher.mjs';
+import { isChristopherAdmin, requireChristopherAdmin } from './christopherFingerprint.mjs';
 
 const idPattern = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,119}$/;
 const id = value => { if (typeof value !== 'string' || !idPattern.test(value)) fail(400, 'invalid_id', 'Use a short ID containing letters, numbers, dots, underscores or hyphens.'); return value; };
@@ -282,7 +283,7 @@ export class ControlPlane {
     const { group } = identity.admin ? { group: null } : await this.groupAccess(identity, false);
     if (this.config.requireGroups && identity.kind === 'account' && !identity.admin && !group) return [];
     const [models, providers] = await Promise.all([this.store.list('models'), this.store.list('providers')]);
-    return models.filter(model => (!group || group.modelIds.includes(model.id)) && model.enabled && (!identity.allowedModels || identity.allowedModels.includes(model.id)) && providers.some(provider => provider.id === model.providerId && provider.enabled && (provider.credential || provider.envAlias || provider.allowAnonymous || provider.native)))
+    return models.filter(model => (model.native !== 'christopher' || isChristopherAdmin(identity)) && (!group || group.modelIds.includes(model.id)) && model.enabled && (!identity.allowedModels || identity.allowedModels.includes(model.id)) && providers.some(provider => provider.id === model.providerId && provider.enabled && (provider.credential || provider.envAlias || provider.allowAnonymous || provider.native)))
       .map(model => ({ id: model.id, model: model.model, capabilities: model.capabilities, task: model.task, providerId: model.providerId }));
   }
   async authenticateKey(token) {
@@ -327,8 +328,8 @@ export class ControlPlane {
     if (identity.allowedModels && !identity.allowedModels.includes(alias)) fail(403, 'model_not_granted', 'This system key is not allowed to use this model route.');
   }
   async christopherRoute(identity) {
-    const { group, organizationId } = await this.groupAccess(identity);
-    if (group && !group.modelIds.includes(CHRISTOPHER.alias)) fail(403, 'model_not_granted', 'Your group is not assigned Christopher.');
+    requireChristopherAdmin(identity);
+    const { group, organizationId } = await this.groupAccess(identity, false);
     await this.authorize(identity, CHRISTOPHER.alias);
     if (this.enabled) {
       const model = (await this.store.get('models/christopher')).data;

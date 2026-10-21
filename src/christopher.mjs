@@ -150,7 +150,7 @@ export async function evaluateChristopher(input, { signal } = {}) {
     compatible = conflicts.length ? [] : worlds.filter(w => [...bounds].every(([id, b]) => cmp(w.values.get(id), b[0]) >= 0 && cmp(w.values.get(id), b[1]) <= 0));
   } else check(input.worlds === undefined, 'invalid_state_space', 'worlds are accepted only in finite mode.');
   const empty = conflicts.length > 0 || compatible?.length === 0;
-  const calculated = new Map(), truthByClaim = new Map();
+  const calculated = new Map(), residuals = new Map(), truthByClaim = new Map();
   await checkpoint(signal);
   for (const c of ordered) {
     const grounding = groundings.get(c.id);
@@ -163,20 +163,24 @@ export async function evaluateChristopher(input, { signal } = {}) {
         a = add(a, min(p, q)); b = add(b, max(p, q));
       }
       if (c.relation === '>=') [a, b] = [neg(b), neg(a)];
+      residuals.set(c.id, { min: formatted(a), max: formatted(b), unit: c.unit, satisfies: c.relation === '==' ? '== 0' : '<= 0' });
       if (c.relation === '==') { lo = cmp(a, ZERO) <= 0 && cmp(b, ZERO) >= 0 ? ZERO : min(abs(a), abs(b)); hi = max(abs(a), abs(b)); }
       else { lo = max(ZERO, a); hi = max(ZERO, b); }
     } else {
-      const truths = [];
+      const truths = []; let rMin, rMax;
       for (let i = 0; i < compatible.length; i++) {
         if (i % 64 === 0) await checkpoint(signal);
         const w = compatible[i];
-        const v = c.kind === 'linear' ? violation(c, affine(c, w.values)) :
+        const r = c.kind === 'linear' ? affine(c, w.values) : null;
+        if (r) { rMin = rMin === undefined ? r : min(rMin, r); rMax = rMax === undefined ? r : max(rMax, r); }
+        const v = c.kind === 'linear' ? violation(c, r) :
           (c.kind === 'all' ? c.claimIds.every(id => truthByClaim.get(id)?.[i]) : c.claimIds.some(id => truthByClaim.get(id)?.[i])) ? ZERO : ONE;
         truths.push(v.n === 0n);
         if (lo === undefined || cmp(v, lo) < 0) { lo = v; lowWorldId = w.id; }
         if (hi === undefined || cmp(v, hi) > 0) { hi = v; highWorldId = w.id; }
       }
       truthByClaim.set(c.id, truths);
+      if (rMin !== undefined) residuals.set(c.id, { min: formatted(rMin), max: formatted(rMax), unit: c.unit, satisfies: c.relation === '==' ? '== 0' : '<= 0' });
     }
     calculated.set(c.id, { lower: formatted(lo), upper: formatted(hi), unit: c.unit, ...(lowWorldId ? { lowerWitnessWorldId: lowWorldId, upperWitnessWorldId: highWorldId } : {}) });
     await checkpoint(signal);
@@ -184,7 +188,7 @@ export async function evaluateChristopher(input, { signal } = {}) {
   const results = [...claims.values()].map(c => {
     const grounding = groundings.get(c.id), gap = calculated.get(c.id);
     const status = empty ? 'evidence_conflict' : !grounding.complete ? 'missing_evidence' : gap.upper === '0' ? 'compatible' : gap.lower !== '0' ? 'deviation' : 'unresolved';
-    return { id: c.id, text: c.text, status, gap, grounding };
+    return { id: c.id, text: c.text, status, gap, grounding, orientedResidual: residuals.get(c.id) || null };
   });
   const sourceGroups = [...new Set([...observations.values()].map(o => o.sourceGroup))];
   const variableConstraints = [...variables].map(([id, v]) => {

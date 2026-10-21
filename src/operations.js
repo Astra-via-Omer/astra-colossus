@@ -45,7 +45,7 @@
 
   function renderOverview() {
     if (!catalog) return;
-    const available = catalog.models.filter(model => model.enabled && catalog.providers.some(provider => provider.id === model.providerId && provider.enabled && (provider.credentialConfigured || provider.allowAnonymous)));
+    const available = catalog.models.filter(model => model.enabled && catalog.providers.some(provider => provider.id === model.providerId && provider.enabled && (provider.native || provider.credentialConfigured || provider.allowAnonymous)));
     byId('overview-models').textContent = count(available.length); byId('overview-model-detail').textContent = `${catalog.models.length} registered · ${catalog.providers.length} provider connections`;
     byId('nav-models-count').textContent = String(catalog.models.length);
     const totals = usage?.totals;
@@ -69,8 +69,8 @@
       element.append(node('span', 'node-symbol', { workflow: '◈', enigma: '⌁', lab: '⌘', evidence: '◇', observer: '◎' }[system.id]), label, node('span', 'node-indicator' + (enrolled ? ' enrolled' : ''))); return element;
     }));
     const providers = catalog.providers.slice(0, 3).map(provider => {
-      const element = node('div', 'provider-summary'), label = node('div'); label.append(node('strong', '', provider.name), node('small', '', `${catalog.models.filter(model => model.providerId === provider.id).length} model routes · ${provider.credentialSource === 'runtime' ? 'Runtime identity' : provider.credentialSource === 'managed' ? 'Managed credential' : provider.credentialConfigured ? 'Vault credential' : provider.allowAnonymous ? 'Anonymous endpoint' : 'Needs credential'}`));
-      element.append(providerMark(provider), label, statusBadge(!provider.enabled ? 'paused' : provider.health?.status || (provider.credentialConfigured || provider.allowAnonymous ? 'configured' : 'needs key'))); return element;
+      const element = node('div', 'provider-summary'), label = node('div'); label.append(node('strong', '', provider.name), node('small', '', `${catalog.models.filter(model => model.providerId === provider.id).length} model routes · ${provider.native === 'christopher' ? 'Colossus CPU runtime' : provider.credentialSource === 'runtime' ? 'Runtime identity' : provider.credentialSource === 'managed' ? 'Managed credential' : provider.credentialConfigured ? 'Vault credential' : provider.allowAnonymous ? 'Anonymous endpoint' : 'Needs credential'}`));
+      element.append(providerMark(provider), label, statusBadge(!provider.enabled ? 'paused' : provider.health?.status || (provider.native || provider.credentialConfigured || provider.allowAnonymous ? 'configured' : 'needs key'))); return element;
     });
     for (const [name, kind] of [['OpenAI', 'openai'], ['Anthropic', 'anthropic']]) if (providers.length < 3 && !catalog.providers.some(provider => provider.kind === kind)) {
       const element = node('div', 'provider-summary'), label = node('div'); label.append(node('strong', '', name), node('small', '', 'Ready to connect')); element.append(providerMark({ kind, name }), label, button('＋ Connect', () => openEditor('providers', null, kind))); providers.push(element);
@@ -338,6 +338,9 @@
   document.addEventListener('colossus:ready', event => {
     accessVersion++; consoleRole = event.detail.user.role; verified = consoleRole === 'admin';
     document.body.dataset.consoleRole = consoleRole;
+    let christopherLink = document.getElementById('christopher-private-link');
+    if (verified && !christopherLink) { christopherLink = node('a', '', '◈ Christopher experiment'); christopherLink.id = 'christopher-private-link'; christopherLink.href = '/admin/christopher'; document.querySelector('.ops-navigation').append(christopherLink); }
+    if (christopherLink) christopherLink.hidden = !verified;
     const hash = location.hash.slice(1);
     showView(aliases[hash] || hash || (verified ? 'overview' : 'engines'));
     if (verified) void refresh();
