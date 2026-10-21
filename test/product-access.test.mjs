@@ -86,9 +86,12 @@ test('expiry, future start, revoked membership, changed groups and account disab
     assert.equal((await app.request('/v1/chat/completions', input, headers)).status, 403);
   }
   await app.grant(userId, 'workflow');
+  const admitted = { kind: 'account', id: userId, productVerified: true, systemId: 'workflow', keyId: 'verified-test-key' };
+  await app.productAccess.authorize(admitted);
   await app.control.save('groups', { id: 'approved', memberIds: [adminId] }, actor);
   assert.equal((await app.request('/v1/chat/completions', input, headers)).status, 409);
   await app.control.save('groups', { id: 'new-group', name: 'New group', memberIds: [userId], modelIds: ['astra-default'] }, actor);
+  await assert.rejects(app.control.assignedRoute(admitted, input), { code: 'product_license_required' });
   assert.equal((await app.request('/v1/chat/completions', input, headers)).status, 403, 'license must not follow a group transfer');
   await app.grant(userId, 'workflow', { groupId: 'new-group' });
   app.users.get('user-token').app_metadata.disabled = true;
