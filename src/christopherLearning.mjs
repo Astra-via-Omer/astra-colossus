@@ -47,14 +47,21 @@ export class ChristopherLearning {
     const trainCases = new Set(train.map(e => e.caseId)), trainSources = new Set(train.flatMap(e => e.sourceGroups));
     if (holdout.some(e => trainCases.has(e.caseId) || e.sourceGroups.some(g => trainSources.has(g)))) fail(400, 'split_leakage', 'Case IDs and source families must be disjoint between training and holdout.');
     if (Math.max(...train.map(e => Date.parse(e.eventTime))) >= Math.min(...holdout.map(e => Date.parse(e.eventTime)))) fail(400, 'time_leakage', 'All training events must precede the held-out events.');
-    const values = new Map();
-    for (const e of train) for (const f of e.fingerprint.features) {
+    // Connected components account for transitive common-origin dependence.
+    // One case/source component contributes one median, regardless of copies.
+    const parent = train.map((_, i) => i), find = i => parent[i] === i ? i : (parent[i] = find(parent[i]));
+    for (let i = 0; i < train.length; i++) for (let j = 0; j < i; j++) if (train[i].caseId === train[j].caseId || train[i].sourceGroups.some(g => train[j].sourceGroups.includes(g))) parent[find(i)] = find(j);
+    const grouped = new Map();
+    for (let i = 0; i < train.length; i++) for (const f of train[i].fingerprint.features) {
       if (!f.observed || f.observed.min !== f.observed.max) continue;
-      if (!values.has(f.featureKey)) values.set(f.featureKey, []);
-      values.get(f.featureKey).push(Number(f.observed.min));
+      if (!grouped.has(f.featureKey)) grouped.set(f.featureKey, new Map());
+      const groups = grouped.get(f.featureKey), group = find(i);
+      if (!groups.has(group)) groups.set(group, []);
+      groups.get(group).push(Number(f.observed.min));
     }
+    const values = new Map([...grouped].map(([key, groups]) => [key, [...groups.values()].map(median)]));
     const features = [...values].filter(([, a]) => a.length >= 3).map(([featureKey, a]) => { const center = median(a); return { featureKey, samples: a.length, median: center, mad: median(a.map(x => Math.abs(x - center))), min: Math.min(...a), max: Math.max(...a) }; });
-    if (!features.length) fail(400, 'no_trainable_features', 'At least one aligned feature needs three point observations.');
+    if (!features.length) fail(400, 'no_trainable_features', 'At least one aligned feature needs point observations from three independent case/source groups.');
     const comparisons = []; let independentlyChecked = 0, independentMatches = 0;
     for (const e of holdout) {
       const result = await fingerprint(e.input);
@@ -70,6 +77,7 @@ export class ChristopherLearning {
     const candidate = { id: randomUUID(), namespace, version: 'empirical-reference@0.1.0', createdAt: new Date().toISOString(), status: 'research_only',
       expiresAt: new Date(Math.min(...examples.map(e => Date.parse(e.expiresAt)))).toISOString(), sourceExampleIds: examples.map(e => e.id),
       trained: true, modelType: 'per-feature median and observed range', trainingExamples: train.length, heldOutExamples: holdout.length,
+      trainingCaseSourceGroups: new Set(train.map((_, i) => find(i))).size,
       dataClasses: [...new Set(examples.map(e => e.dataClass))], features, evaluation: { comparisons, meanAbsoluteMidpointError: errors.length ? errors.reduce((a, b) => a + b, 0) / errors.length : null, independentlyChecked, independentMatches, teacherLabelsUsedAsTruth: false },
       limitation: 'A learned descriptive numerical reference, not a language model or policy. Training-range departures do not establish falsehood. Midpoint statistics use floating point; formal gap bounds remain exact. Synthetic results do not establish real-world accuracy. No serving routes are promoted or changed.' };
     if (!await this.store.commit([{ path: 'christopherCandidates/' + candidate.id, data: candidate, version: null }])) fail(409, 'dataset_conflict', 'Retry saving this candidate.');
@@ -77,7 +85,8 @@ export class ChristopherLearning {
   }
   async snapshot(namespace) {
     const examples = await this.examples(namespace);
-    const candidates = (await this.store.list('christopherCandidates', 500)).filter(c => c.namespace === namespace && !c.deleted && Date.parse(c.expiresAt) > Date.now()).sort((a, b) => a.createdAt.localeCompare(b.createdAt)).slice(-10);
+    const available = new Set(examples.map(e => e.id));
+    const candidates = (await this.store.list('christopherCandidates', 500)).filter(c => c.namespace === namespace && !c.deleted && Date.parse(c.expiresAt) > Date.now() && c.sourceExampleIds?.every(id => available.has(id))).sort((a, b) => a.createdAt.localeCompare(b.createdAt)).slice(-10);
     return { captureEnabled: this.captureEnabled && this.retentionReady, capture: this.stats, limits: { examples: MAX_EXAMPLES, exampleBytes: MAX_BYTES, concurrentCaptures: 2, retentionDays: 1 },
       examples: examples.map(({ id, caseId, eventTime, split, dataClass, expiresAt, label }) => ({ id, caseId, eventTime, split, dataClass, expiresAt, label })), candidates,
       limitation: 'Raw traffic capture is disabled unless deployment enables it, retention is configured, and a live tenant grant permits structured training data. Expired examples are excluded; administrators can erase records. Configure Firestore TTL before enabling real capture.' };
