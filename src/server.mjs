@@ -162,12 +162,25 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
   }
   async function runEngine(engine, input, signal, process, identity) {
     const { response, route, call } = await upstream(engineRequest(engine, input), signal, process, engine, identity);
+    let data;
     try {
-      const data = providerResult(route, await boundedJson(Readable.fromWeb(response.body), 8000000, true));
+      data = providerResult(route, await boundedJson(Readable.fromWeb(response.body), 8000000, true));
       monitoring.finishCall(call, 'completed', data.usage, response.status);
+      const result = validateResult(data, input.sources, engine.id === 'election-review' || (engine.id === 'claim-check' && engine.version === '1.1.0') ? 8 : 50);
+      call.validation = result.validation;
       return { engine: { id: engine.id, version: engine.version }, model: route.alias, providerModel: route.model,
-        ...validateResult(data, input.sources), usage: data.usage, colossus: { ...route.routing, model: route.alias, pricing: route.pricing || null } };
-    } catch (error) { monitoring.finishCall(call, signal.aborted ? 'cancelled' : 'failed'); throw error; }
+        ...result, usage: data.usage, colossus: { ...route.routing, model: route.alias, pricing: route.pricing || null } };
+    } catch (error) {
+      monitoring.finishCall(call, signal.aborted ? 'cancelled' : 'failed');
+      if (error instanceof ApiError && ['validation_failed', 'invalid_output', 'truncated_output'].includes(error.code)) {
+        if (error.validation) call.validation = error.validation;
+        // Failed validation still consumed provider tokens. Return accounting
+        // metadata, never rejected model text, so callers can settle that attempt.
+        error.accounting = { model: route.alias, usage: data?.usage,
+          colossus: { ...route.routing, model: route.alias, pricing: route.pricing || null } };
+      }
+      throw error;
+    }
   }
   const server = http.createServer(async (req, res) => {
     const requestId = randomUUID(), started = Date.now();
@@ -481,12 +494,14 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
       if (!res.headersSent && !res.destroyed) {
         const timedOut = controller.signal.aborted;
         json(res, { error: { code: cancelled ? 'admin_cancelled' : timedOut ? 'request_timeout' : error instanceof ApiError ? error.code : 'service_error',
-          message: cancelled ? 'An administrator cancelled this process.' : timedOut ? 'The request exceeded its processing window or was cancelled.' : error instanceof ApiError ? error.message : 'The request could not be completed.', requestId } }, cancelled ? 409 : timedOut ? 504 : error instanceof ApiError ? error.status : 500);
+          message: cancelled ? 'An administrator cancelled this process.' : timedOut ? 'The request exceeded its processing window or was cancelled.' : error instanceof ApiError ? error.message : 'The request could not be completed.', requestId,
+          ...(error.validation ? { validation: error.validation } : {}) }, ...(error.accounting || {}) }, cancelled ? 409 : timedOut ? 504 : error instanceof ApiError ? error.status : 500);
       } else if (!res.writableFinished) res.destroy();
     } finally {
       clearTimeout(timer); clearInterval(cancellationTimer); activeControllers.delete(requestId);
       if (admitted === 'control') controlInflight--; else if (admitted) inflight--;
-      if (operation !== 'health') logger({ service: 'colossus', requestId, operation, status: res.statusCode, durationMs: Date.now() - started, ...(errorCode ? { errorCode } : {}) });
+      if (operation !== 'health') logger({ service: 'colossus', requestId, operation, status: res.statusCode, durationMs: Date.now() - started, ...(errorCode ? { errorCode } : {}),
+        ...(process?.calls.at(-1)?.validation ? { validation: process.calls.at(-1).validation } : {}) });
     }
   });
   server.requestTimeout = Math.min(config.timeout, 30000);
