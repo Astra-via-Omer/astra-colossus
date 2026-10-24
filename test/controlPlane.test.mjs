@@ -287,3 +287,15 @@ test('atomic per-account quotas span system keys without preventing another acco
  const quota=[...control.store.memory].find(([path])=>path.startsWith('userQuotas/'))[1].data;assert.equal(quota.dailyCalls,2);
  const wallet=(await control.store.get('wallets/workflow-'+new Date().toISOString().slice(0,7))).data;assert.equal(wallet.calls,3,'Rejected quota requests do not consume budget reservations');
 });
+
+
+test('strict production policy blocks retired provider registration and connection checks before any network call',async()=>{
+ const {config,control,store}=plane();await control.ensure();config.production=true;config.providerMigrationMode='strict';
+ let calls=0;control.fetch=async()=>{calls++;throw Error('Must not send credentials');};
+ await assert.rejects(control.save('providers',{id:'retired',name:'Retired',kind:'compatible',baseUrl:'https://api.deepseek.com',apiKey:'synthetic'},actor),{code:'provider_policy'});
+ await store.mutate(['providers/retired'],()=>[{id:'retired',name:'Retired',kind:'compatible',baseUrl:'https://api.deepseek.com',enabled:false,credential:null}]);
+ await assert.rejects(control.checkConnection('providers','retired',actor),{code:'provider_policy'});
+ await assert.rejects(control.save('models',{id:'retired-model',name:'Retired',providerId:'retired',model:'synthetic'},actor),{code:'provider_policy'});
+ const archived=await control.save('providers',{id:'retired',enabled:false},actor);assert.equal(archived.enabled,false);assert.equal(calls,0);
+ assert((await store.get('providers/retired')).data,'Historical registry records remain');
+});
