@@ -238,10 +238,10 @@ test('shared auth failures fail closed without exposing credentials or granting 
 
 test('production cookies are secure and sign-in fails without shared storage', async t => {
   const httpsOrigin = origin.replace('http:', 'https:');
-  const app = await start(t, { NODE_ENV: 'production', COLOSSUS_ORIGIN: httpsOrigin, COLOSSUS_SESSION_BUCKET: 'test-bucket' });
+  const app = await start(t, { NODE_ENV: 'production', COLOSSUS_SESSION_SECRET: 'synthetic-dedicated-session-secret-32-characters', COLOSSUS_ORIGIN: httpsOrigin, COLOSSUS_SESSION_BUCKET: 'test-bucket' });
   const response = await app.call('/session', undefined, 'POST', { email: 'admin@example.com', password: app.state.password }, { Origin: httpsOrigin });
   assert.equal(response.status, 200); assert.match(response.headers.get('set-cookie'), /; Secure$/);
-  const unavailable = await start(t, { NODE_ENV: 'production', COLOSSUS_ORIGIN: httpsOrigin });
+  const unavailable = await start(t, { NODE_ENV: 'production', COLOSSUS_SESSION_SECRET: 'synthetic-dedicated-session-secret-32-characters', COLOSSUS_ORIGIN: httpsOrigin });
   const rejected = await unavailable.call('/session', undefined, 'POST', { email: 'admin@example.com', password: unavailable.state.password }, { Origin: httpsOrigin });
   assert.equal(rejected.status, 503); assert(!rejected.headers.has('set-cookie'));
 });

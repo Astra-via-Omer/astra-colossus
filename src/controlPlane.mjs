@@ -1,4 +1,5 @@
 import { createHash, randomBytes, randomUUID, createCipheriv, createDecipheriv } from 'node:crypto';
+import { runtimeVertexRoute } from './vertex.mjs';
 import { ControlStore } from './controlStore.mjs';
 import { endpointUrl } from './endpoints.mjs';
 import { fail, resolveRoute, validateChat } from './config.mjs';
@@ -70,7 +71,12 @@ export class ControlPlane {
         return Buffer.concat([decipher.update(Buffer.from(provider.credential.data, 'base64url')), decipher.final()]).toString('utf8'); }
       catch { fail(503, 'credential_unavailable', 'This connection credential needs to be replaced.'); }
     }
-    return provider.envAlias ? this.config.routes[provider.envAlias]?.key || '' : '';
+    if (!provider.envAlias) return '';
+    const configured = this.config.routes[provider.envAlias]?.key || '';
+    // An operator-controlled preparation revision keeps existing requests working
+    // until the registry is switched atomically. Strict mode never uses this key.
+    const preparing = this.config.providerMigrationMode === 'prepare' && provider.envAlias === 'astra-default' && provider.baseUrl === 'https://api.deepseek.com';
+    return configured || (preparing ? this.config.managedProviderKey || '' : '');
   }
   async audit(actor, action, collection, recordId) {
     const auditId = String(9999999999999 - Date.now()) + '-' + randomUUID();
@@ -96,7 +102,7 @@ export class ControlPlane {
       createdAt: previous?.createdAt || now(), updatedAt: now() };
     if (typeof base.enabled !== 'boolean') fail(400, 'invalid_state', 'Supply a boolean enabled state.');
     let value;
-    if (previous?.native) {
+    if (previous?.native || previous?.protocol === 'vertex-openai') {
       if (Object.keys(body).some(key => !['id', 'name', 'enabled', 'expectedUpdatedAt'].includes(key))) fail(400, 'native_configuration', 'This native adapter is configured by deployment. Its name and enabled state can be managed here.');
       value = { ...previous, ...base };
     } else if (collection === 'providers') {
@@ -275,7 +281,8 @@ export class ControlPlane {
     if (!registered.enabled || !provider?.enabled) fail(503, 'route_paused', 'This model or provider connection is paused.');
     if (registered.native) fail(400, 'model_task', registered.native === 'christopher' ? 'Use /v1/christopher/evaluate for structured mathematical checks.' : 'Use the native /v1/media/observe endpoint for this route.');
     const key = this.credential(provider);
-    if (!key && !provider.allowAnonymous) fail(503, 'provider_key_required', 'An administrator must add this provider credential.');
+    const runtimeIdentity = runtimeVertexRoute(this.config, { protocol: provider.protocol, baseUrl: provider.baseUrl });
+    if (!key && !provider.allowAnonymous && !runtimeIdentity) fail(503, 'provider_key_required', 'An administrator must add this provider credential.');
     return { alias, model: registered.model, providerId: provider.id, providerName: provider.name, protocol: provider.protocol,
       baseUrl: provider.baseUrl, key, capabilities: registered.capabilities, pricing: registered.pricing, maxTokens: registered.maxTokens,
       task: registered.task, managed: !!provider.envAlias && !provider.credential && provider.baseUrl === this.config.routes[provider.envAlias]?.baseUrl, defaults: provider.envAlias ? this.config.routes[provider.envAlias]?.defaults : undefined };
@@ -419,7 +426,7 @@ export class ControlPlane {
   async checkConnection(collection, recordId, actor) {
     await this.ensure(); const path = collection + '/' + id(recordId), record = (await this.store.get(path)).data;
     if (!record || !['providers', 'integrations'].includes(collection)) fail(404, 'connection_not_found', 'Choose a registered connection.');
-    if (record.native) fail(409, 'native_connection', 'Native Vertex calls use runtime identity and their own token-count preflight. No compatible model-discovery check is available.');
+    if (record.native || record.protocol === 'vertex-openai') fail(409, 'native_connection', 'Native Vertex calls use runtime identity and their own token-count preflight. No compatible model-discovery check is available.');
     if (collection === 'integrations' && !['rest', 'training'].includes(record.kind)) fail(409, 'storage_agent_required', 'Bucket connections are registered for your ingestion worker. This gateway does not ingest or copy data automatically.');
     const start = Date.now(), key = this.credential(record), headers = {};
     if (key) Object.assign(headers, record.protocol === 'anthropic' ? { 'x-api-key': key, 'anthropic-version': '2023-06-01' } : { Authorization: `Bearer ${key}` });

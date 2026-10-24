@@ -6,6 +6,7 @@ import { pipeline } from 'node:stream/promises';
 import { pathToFileURL } from 'node:url';
 import { configuration, ApiError, fail, equalSecret, resolveRoute, validateChat } from './config.mjs';
 import { EngineRegistry, validateEngine, engineRequest, validateResult } from './engines.mjs';
+import { runtimeVertexRoute, requireApprovedProvider } from './vertex.mjs';
 import { CloudRegistry } from './cloudRegistry.mjs';
 import { Sessions } from './sessions.mjs';
 import { UsageMonitor, UsageStream, tokenUsage } from './usage.mjs';
@@ -36,6 +37,7 @@ async function boundedJson(stream, limit, upstream = false) {
 export function createService(config, { fetcher = fetch, logger = entry => console.log(JSON.stringify(entry)), controlStore, endpointFetcher = fetcher === fetch ? endpointFetch : fetcher } = {}) {
   const registry = config.engineBucket ? new CloudRegistry(config.engineBucket, fetcher) : new EngineRegistry(config, fetcher);
   const sessions = new Sessions(config, fetcher);
+  const vertexTokens = new CloudRegistry('', fetcher);
   const monitoring = new UsageMonitor(config, fetcher);
   const media = new MediaObserver(config.media, fetcher);
   const control = new ControlPlane(config, fetcher, endpointFetcher, controlStore), activeControllers = new Map();
@@ -136,7 +138,9 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
       request.max_tokens ??= route.maxTokens || 4000;
     }
     if (request.stream) request.stream_options = { ...request.stream_options, include_usage: true };
+    requireApprovedProvider(config, route);
     const prepared = providerRequest(route, request, task);
+    if (runtimeVertexRoute(config, route)) prepared.headers.Authorization = `Bearer ${await vertexTokens.auth()}`;
     const reservation = await control.reserve(identity, route, request, process.requestId, process.calls.length + 1);
     const call = monitoring.call(process, route, engine);
     Object.assign(call, route.routing || {});
@@ -362,6 +366,7 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
       const inferenceOperations = { '/v1/chat/completions': 'chat', '/v1/embeddings': 'embedding', '/v1/runs': 'run_engine', '/v1/engines/test': 'test_engine', '/v1/evaluations': 'evaluate', '/v1/media/observe': 'observe_media', '/v1/christopher/evaluate': 'christopher_evaluate', '/v1/christopher/fingerprint': 'christopher_fingerprint' };
       if (Object.hasOwn(inferenceOperations, url.pathname)) {
         operation = inferenceOperations[url.pathname];
+        if (config.production && identity.kind === 'account' && !identity.productVerified) fail(403, 'product_required', 'Send analysis through an authorized Astra product.');
         if (['test_engine', 'evaluate'].includes(operation) && !identity.admin) fail(403, 'admin_required', 'Only admins can test or evaluate engines.');
         if (operation==='observe_media' && identity.kind==='account') {
           if(!['admin','participant'].includes(identity.role)) fail(403,'analyst_required','Audio/video observation requires an analyst account.');

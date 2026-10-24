@@ -123,7 +123,7 @@ function cloud(objects, state = {}) {
   };
 }
 test('shared immutable history survives instances and pricing changes, marks stale runs, and fails closed on storage outages', async () => {
-  const objects = new Map(), state = {}, config = configuration({ ...baseEnv, COLOSSUS_USAGE_BUCKET: 'private-usage-bucket', NODE_ENV: 'production', COLOSSUS_ORIGIN: 'https://colossus.example' });
+  const objects = new Map(), state = {}, config = configuration({ ...baseEnv, COLOSSUS_USAGE_BUCKET: 'private-usage-bucket', NODE_ENV: 'production', COLOSSUS_SESSION_SECRET: 'synthetic-dedicated-session-secret-32-characters', COLOSSUS_ORIGIN: 'https://colossus.example' });
   let now = Date.now(); const first = new UsageMonitor(config, cloud(objects, state), () => now);
   const second = new UsageMonitor({ ...config, routes: { 'astra-default': { ...config.routes['astra-default'], pricing: { inputPerMillion: 99, outputPerMillion: 99 } } } }, cloud(objects, state), () => now);
   const actor = { kind: 'account', id: memberId, email: 'member@example.com' };

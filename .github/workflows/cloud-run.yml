@@ -29,23 +29,23 @@ jobs:
       - run: docker build -t "astra-colossus:$GITHUB_SHA" .
       - name: Smoke test the packaged runtime
         run: |
-          docker run --detach --name colossus-smoke --publish 127.0.0.1:4002:8080 --env COLOSSUS_ORIGIN=https://colossus.astra-via.com --env 'ASTRA_PROVIDER_CONFIG_JSON={"key":"synthetic-ci-key","model":"synthetic-ci-model"}' "astra-colossus:$GITHUB_SHA"
+          docker run --detach --name colossus-smoke --publish 127.0.0.1:4002:8080 --env COLOSSUS_ORIGIN=https://colossus.astra-via.com --env 'COLOSSUS_API_KEYS_JSON=["synthetic-ci-client-key"]' --env COLOSSUS_SESSION_SECRET=synthetic-ci-session-secret-with-32-characters --env 'ASTRA_PROVIDER_CONFIG_JSON={"key":"synthetic-ci-key","model":"synthetic-ci-model"}' "astra-colossus:$GITHUB_SHA"
           trap 'docker logs colossus-smoke; docker rm --force colossus-smoke >/dev/null' EXIT
           curl --fail --retry 10 --retry-delay 1 --retry-all-errors http://127.0.0.1:4002/healthz
           curl --fail --silent http://127.0.0.1:4002/ | python3 -c 'import sys; page=sys.stdin.read(); assert "welcome-login" in page and "id=\"run\"" not in page'
-          test "$(curl --silent --output /dev/null --write-out '%{http_code}' -H 'Authorization: Bearer synthetic-ci-key' http://127.0.0.1:4002/app)" = '303'
-          test "$(curl --silent --output /dev/null --write-out '%{http_code}' -H 'Authorization: Bearer synthetic-ci-key' http://127.0.0.1:4002/session)" = '401'
-          test "$(curl --silent --output /dev/null --write-out '%{http_code}' -H 'Authorization: Bearer synthetic-ci-key' http://127.0.0.1:4002/v1/control)" = '401'
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' -H 'Authorization: Bearer synthetic-ci-client-key' http://127.0.0.1:4002/app)" = '303'
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' -H 'Authorization: Bearer synthetic-ci-client-key' http://127.0.0.1:4002/session)" = '401'
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' -H 'Authorization: Bearer synthetic-ci-client-key' http://127.0.0.1:4002/v1/control)" = '401'
           curl --fail --silent http://127.0.0.1:4002/operations.js | python3 -c 'import sys; assert "/v1/control" in sys.stdin.read()'
           curl --fail --silent http://127.0.0.1:4002/group-editor.js | python3 -c 'import sys; assert "window.ColossusGroups" in sys.stdin.read()'
           curl --fail --silent http://127.0.0.1:4002/operations.css | python3 -c 'import sys; assert ".ops-navigation" in sys.stdin.read()'
-          curl --fail --silent -H 'Authorization: Bearer synthetic-ci-key' http://127.0.0.1:4002/v1/models | python3 -c 'import json,sys; assert any(x["id"] == "astra-default" for x in json.load(sys.stdin)["data"])'
+          curl --fail --silent -H 'Authorization: Bearer synthetic-ci-client-key' http://127.0.0.1:4002/v1/models | python3 -c 'import json,sys; assert any(x["id"] == "astra-default" for x in json.load(sys.stdin)["data"])'
           test "$(curl --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1:4002/admin/christopher)" = '401'
           test "$(curl --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1:4002/admin/christopher.js)" = '401'
           test "$(curl --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1:4002/admin/christopher-gravity.js)" = '401'
           test "$(curl --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1:4002/admin/christopher-report.js)" = '401'
           test "$(curl --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1:4002/admin/christopher-pattern.js)" = '401'
-          test "$(curl --silent --output /dev/null --write-out '%{http_code}' -H 'Authorization: Bearer synthetic-ci-key' http://127.0.0.1:4002/v1/christopher)" = '403'
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' -H 'Authorization: Bearer synthetic-ci-client-key' http://127.0.0.1:4002/v1/christopher)" = '403'
       - name: Save checked image
         if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || inputs.deploy)
         run: docker save "astra-colossus:$GITHUB_SHA" | gzip > "$RUNNER_TEMP/colossus.tar.gz"
@@ -101,6 +101,30 @@ jobs:
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
               print('value=' + escaped, file=output)
           PY
+      - name: Prepare pinned runtime secrets
+        id: runtime_secrets
+        env:
+          SESSION_VERSION: ${{ vars.COLOSSUS_SESSION_SECRET_VERSION }}
+          VAULT_VERSION: ${{ vars.COLOSSUS_VAULT_SECRET_VERSION || '1' }}
+          MIGRATION_MODE: ${{ vars.COLOSSUS_PROVIDER_MIGRATION_MODE || 'strict' }}
+          LEGACY_VERSION: ${{ vars.ASTRA_PROVIDER_SECRET_VERSION || '1' }}
+        run: |
+          python3 - <<'PY'
+          import os, re
+          def version(name):
+              value = os.environ[name]
+              assert re.fullmatch(r'[1-9][0-9]*', value), 'Runtime secrets must use numeric versions'
+              return value
+          bindings = [
+              'COLOSSUS_SESSION_SECRET=astra-colossus-session:' + version('SESSION_VERSION'),
+              'COLOSSUS_VAULT_SECRET=astra-colossus-vault:' + version('VAULT_VERSION'),
+              'COLOSSUS_MEDIA_INGEST_KEY=astra-enigma-media-ingest:1',
+          ]
+          if os.environ['MIGRATION_MODE'] == 'prepare':
+              bindings.append('ASTRA_PROVIDER_CONFIG_JSON=astra-provider-config:' + version('LEGACY_VERSION'))
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              print('value<<RUNTIME_SECRETS', *bindings, 'RUNTIME_SECRETS', sep='\n', file=output)
+          PY
       - uses: google-github-actions/deploy-cloudrun@2028e2d7d30a78c6910e0632e48dd561b064884d
         with:
           project_id: ${{ vars.GCP_PROJECT_ID }}
@@ -111,10 +135,15 @@ jobs:
           env_vars: |
             COLOSSUS_ORIGIN=https://colossus.astra-via.com
             COLOSSUS_MAX_INFLIGHT=16
+            COLOSSUS_API_KEYS_JSON=[]
+            COLOSSUS_VERTEX_PROJECT=${{ vars.COLOSSUS_VERTEX_PROJECT }}
+            COLOSSUS_PROVIDER_MIGRATION_MODE=${{ vars.COLOSSUS_PROVIDER_MIGRATION_MODE || 'strict' }}
+            COLOSSUS_VERTEX_LOCATION=eu
+            COLOSSUS_VERTEX_MODEL=gemini-3.1-flash-lite
             COLOSSUS_CHRISTOPHER_CAPTURE=false
             COLOSSUS_CHRISTOPHER_RETENTION_READY=false
             COLOSSUS_MEDIA_PROJECT=${{ vars.GCP_PROJECT_ID }}
-            COLOSSUS_MEDIA_LOCATION=global
+            COLOSSUS_MEDIA_LOCATION=eu
             COLOSSUS_MEDIA_MODEL=gemini-3.1-flash-lite
             COLOSSUS_ENGINE_BUCKET=${{ vars.COLOSSUS_ENGINE_BUCKET }}
             COLOSSUS_CONTROL_DATABASE=${{ vars.COLOSSUS_CONTROL_DATABASE || 'astra-colossus' }}
@@ -124,8 +153,5 @@ jobs:
             SUPABASE_URL=${{ vars.SUPABASE_URL }}
             SUPABASE_ANON_KEY=${{ vars.SUPABASE_ANON_KEY }}
           env_vars_update_strategy: merge
-          secrets: |
-            ASTRA_PROVIDER_CONFIG_JSON=astra-provider-config:${{ vars.ASTRA_PROVIDER_SECRET_VERSION }}
-            COLOSSUS_VAULT_SECRET=astra-colossus-vault:${{ vars.COLOSSUS_VAULT_SECRET_VERSION || '1' }}
-            COLOSSUS_MEDIA_INGEST_KEY=astra-enigma-media-ingest:1
-          secrets_update_strategy: merge
+          secrets: ${{ steps.runtime_secrets.outputs.value }}
+          secrets_update_strategy: overwrite
