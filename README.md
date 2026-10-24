@@ -246,3 +246,8 @@ Strict is the default, blocks DeepSeek hosts even in a stale registry, and CI
 removes the legacy provider secret mount. Preserve historical audit/usage records.
 Disable project AI caching and verify applicable provider retention/contract terms
 separately; the endpoint configuration alone is not a zero-retention attestation.
+
+
+## Preview password sign-in
+
+The owner requested email/password sign-in for every approved role without OTP or phone verification. Administrator assurance gates and the challenge interface are removed. Live identity, account status, role, origin and product-approval checks remain in place. Clear old factors with the shared Workspace rollout.
