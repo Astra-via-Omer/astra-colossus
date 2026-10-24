@@ -12,7 +12,7 @@ import { Sessions } from './sessions.mjs';
 import { UsageMonitor, UsageStream, tokenUsage } from './usage.mjs';
 import { ControlPlane } from './controlPlane.mjs';
 import { endpointFetch } from './endpoints.mjs';
-import { providerRequest, providerResult, AnthropicStream } from './providerAdapters.mjs';
+import { providerRequest, providerResult, AnthropicStream, providerRejectionInfo } from './providerAdapters.mjs';
 import { MediaObserver, mediaCostUsd } from './media.mjs';
 import { accountDisplay, DisplayError } from './account-display.mjs';
 import { validDisplayPreferences } from './display-contract.mjs';
@@ -155,7 +155,8 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
     catch (error) { monitoring.finishCall(call, signal.aborted ? 'cancelled' : 'failed'); if (signal.aborted) throw error; fail(502, 'provider_unavailable', 'The model provider is unavailable.'); }
     if (!response.ok) {
       monitoring.finishCall(call, 'failed', undefined, response.status);
-      await response.body?.cancel();
+      const rejection = response.body ? await boundedJson(Readable.fromWeb(response.body), 32768, true).catch(() => null) : null;
+      call.rejection = providerRejectionInfo(rejection);
       const code = { 401: 'provider_key_rejected', 402: 'provider_credits_required', 429: 'provider_busy' }[response.status] || 'provider_error';
       fail([402, 429].includes(response.status) ? response.status : 502, code, 'The provider could not complete this request.');
     }
@@ -511,7 +512,8 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
       clearTimeout(timer); clearInterval(cancellationTimer); activeControllers.delete(requestId);
       if (admitted === 'control') controlInflight--; else if (admitted) inflight--;
       if (operation !== 'health') logger({ service: 'colossus', requestId, operation, status: res.statusCode, durationMs: Date.now() - started, ...(errorCode ? { errorCode } : {}),
-        ...(process?.calls.at(-1)?.validation ? { validation: process.calls.at(-1).validation } : {}) });
+        ...(process?.calls.at(-1)?.validation ? { validation: process.calls.at(-1).validation } : {}),
+        ...(process?.calls.at(-1)?.rejection ? { providerRejection: process.calls.at(-1).rejection } : {}) });
     }
   });
   server.requestTimeout = Math.min(config.timeout, 30000);
