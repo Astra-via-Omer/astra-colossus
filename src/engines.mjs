@@ -94,6 +94,30 @@ export class EngineRegistry {
   }
 }
 const normalized = s => s.replace(/\s+/g, ' ').trim();
+/** Short provider identifiers avoid constrained-schema rejection of long IDs.
+ * The original source/section pair is restored before semantic validation. */
+export function compactReviewSources(input) {
+  const sourceIds = new Map(), references = new Map();
+  const sources = input.sources.map((source, index) => {
+    if (!sourceIds.has(source.sourceId)) sourceIds.set(source.sourceId, 's' + sourceIds.size);
+    const sourceId = sourceIds.get(source.sourceId), sectionId = 'p' + index;
+    references.set(sectionId, { sourceId, originalSource: source.sourceId, originalSection: source.sectionId });
+    return { ...source, sourceId, sectionId };
+  });
+  return { input: { ...input, sources }, restore(data) {
+    let parsed;
+    try { parsed = JSON.parse(data.choices?.[0]?.message?.content); } catch { return data; }
+    if (!Array.isArray(parsed?.claims)) return data;
+    const claims = parsed.claims.map(claim => {
+      const reference = references.get(claim?.sectionId);
+      const valid = reference && reference.sourceId === claim?.sourceId;
+      // Missing identities cannot match a validated original section. Never
+      // guess a source when the provider returns an unknown or mismatched pair.
+      return { ...claim, sourceId: valid ? reference.originalSource : undefined, sectionId: valid ? reference.originalSection : undefined };
+    });
+    return { ...data, choices: [{ ...data.choices[0], message: { ...data.choices[0].message, content: JSON.stringify({ ...parsed, claims }) } }, ...data.choices.slice(1)] };
+  } };
+}
 export function engineRequest(engine, input) {
   if (!input || !Array.isArray(input.sources) || !input.sources.length || input.sources.length > 100 ||
       typeof input.focus !== 'string' || input.focus.length > 4000) fail(400, 'invalid_sources', 'Supply focus and 1–100 source sections.');
