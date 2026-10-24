@@ -285,20 +285,17 @@ test('encrypted shared sessions work across instances and revoke replay; tamperi
 });
 
 
-test('production admin login remains pending until verified TOTP and rejects pending-cookie substitution and replay',async t=>{
+test('production admins sign in with passwords while live status and session isolation remain enforced',async t=>{
  const origin='https://colossus.astra-via.com';
  const app=await start(t,{NODE_ENV:'production',COLOSSUS_SESSION_SECRET:'synthetic-dedicated-session-secret-32-characters',COLOSSUS_ORIGIN:origin,COLOSSUS_SESSION_BUCKET:'test-bucket'});
  const jwt=aal=>'synthetic.'+Buffer.from(JSON.stringify({aal})).toString('base64url')+'.signature';
- app.state.token=jwt('aal1');app.state.verifiedToken=jwt('aal2');app.state.user.factors=[{id:'33333333-3333-3333-3333-333333333333',status:'verified',factor_type:'totp'}];
+ app.state.token=jwt('aal1');app.state.user.factors=[{id:'33333333-3333-3333-3333-333333333333',status:'verified',factor_type:'totp'}];
  const post=body=>app.call('/session',undefined,'POST',body,{Origin:origin});
- let response=await post({email:'admin@example.com',password:app.state.password});assert.equal(response.status,200);assert.equal((await response.json()).mfaRequired,true);
- const pending=response.headers.getSetCookie().find(value=>value.startsWith('colossus_mfa_pending=')).split(';')[0];assert.match(pending,/=[a-f0-9]{64}$/);
- assert.equal((await app.call('/session',pending)).status,401);
- assert.equal((await app.call('/session',pending.replace('colossus_mfa_pending','colossus_session'))).status,403);
- response=await app.call('/session/mfa',pending,'POST',{code:'000000'},{Origin:origin});assert.equal(response.status,400);
- response=await app.call('/session/mfa',pending,'POST',{code:'123456'},{Origin:origin});assert.equal(response.status,200);
- const active=response.headers.getSetCookie().find(value=>value.startsWith('colossus_session=')).split(';')[0];assert.equal((await app.call('/session',active)).status,200);
- assert.equal((await app.call('/session/mfa',pending,'POST',{code:'123456'},{Origin:origin})).status,401);
+ let response=await post({email:'admin@example.com',password:app.state.password});assert.equal(response.status,200);
+ const body=await response.json();assert.equal(body.signedIn,true);assert.equal(body.mfaRequired,undefined);assert.equal(body.user.role,'admin');
+ const active=response.headers.getSetCookie().find(value=>value.startsWith('colossus_session=')).split(';')[0];assert.match(active,/=[a-f0-9]{64}$/);
+ assert.equal((await app.call('/session',active)).status,200);
+ assert.equal((await app.call('/session',active.replace('colossus_session','colossus_mfa_pending'))).status,401);
  app.state.authStatus=401;assert.equal((await app.call('/session',active)).status,401);
- app.state.authStatus=200;app.state.user.factors=[];response=await post({email:'admin@example.com',password:app.state.password});assert.equal(response.status,403);assert.equal((await response.json()).error.code,'mfa_enrollment_required');
+ app.state.authStatus=200;app.state.user.factors=[];response=await post({email:'admin@example.com',password:app.state.password});assert.equal(response.status,200);
 });
