@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID, createCipheriv, createDecipheriv } from 'node:crypto';
-import { runtimeVertexRoute, requireApprovedProvider } from './vertex.mjs';
+import { runtimeVertexRoute, requireApprovedProvider, isDeepSeek } from './vertex.mjs';
 import { ControlStore } from './controlStore.mjs';
 import { endpointUrl } from './endpoints.mjs';
 import { fail, resolveRoute, validateChat } from './config.mjs';
@@ -83,6 +83,31 @@ export class ControlPlane {
     const entry = { id: auditId, at: now(), actor: actor.email || actor.id, action, collection, recordId };
     if (!await this.store.commit([{ path: 'audit/' + auditId, data: entry, version: null }])) fail(503, 'audit_unavailable', 'The configuration change could not be audited.');
   }
+  async personalProviders(actor, userId = actor.id) {
+    if (actor.kind !== 'account' || typeof userId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(userId) || (userId !== actor.id && !actor.admin))
+      fail(403, 'provider_access_denied', 'Only your own provider settings or an administrator-managed account can be viewed.');
+    await this.ensure();
+    const record = (await this.store.get('personalProviders/' + userId)).data;
+    return { userId, deepseekEnabled: record?.deepseekEnabled === true, updatedAt: record?.updatedAt || null };
+  }
+  async savePersonalProviders(actor, body) {
+    const userId = body?.userId || actor.id;
+    await this.personalProviders(actor, userId);
+    if (!actor.admin) fail(403, 'admin_required', 'An administrator must enable an external provider for this person.');
+    if (typeof body?.deepseekEnabled !== 'boolean' || Object.keys(body).some(key => !['userId', 'deepseekEnabled'].includes(key)))
+      fail(400, 'invalid_provider_access', 'Choose one person and a DeepSeek enabled state.');
+    await this.audit(actor, body.deepseekEnabled ? 'personal_deepseek_enabled' : 'personal_deepseek_disabled', 'personalProviders', userId);
+    await this.store.mutate(['personalProviders/' + userId], () => [{ userId, deepseekEnabled: body.deepseekEnabled,
+      updatedAt: now(), updatedBy: actor.id, policyVersion: 'deepseek-personal-v1' }]);
+    return this.personalProviders(actor, userId);
+  }
+  async assertProviderAccess(identity, route) {
+    if (!isDeepSeek(route) || !this.config.production || this.config.providerMigrationMode === 'prepare') return;
+    // Service keys alone and members of the same group never inherit a person's grant.
+    const allowed = identity.kind === 'account' && (await this.personalProviders(identity)).deepseekEnabled;
+    if (!allowed) fail(403, 'personal_provider_disabled', 'DeepSeek is disabled for this person. An administrator can enable it in Users & access.');
+    requireApprovedProvider(this.config, route, { personalDeepSeek: true });
+  }
   pricing(raw) {
     if (raw === null || raw === undefined) return null;
     if (!raw || !['inputPerMillion', 'outputPerMillion'].every(key => nonnegative(raw[key])) ||
@@ -109,7 +134,7 @@ export class ControlPlane {
       const kind = body.kind ?? previous?.kind;
       if (!['openai', 'anthropic', 'deepseek', 'compatible', 'gpu'].includes(kind)) fail(400, 'invalid_provider', 'Choose a supported provider type.');
       const baseUrl = endpointUrl(body.baseUrl ?? previous?.baseUrl).href.replace(/\/$/, '');
-      if (base.enabled) requireApprovedProvider(this.config, {baseUrl});
+      if (base.enabled) requireApprovedProvider(this.config, {baseUrl}, { registration: true });
       if (previous?.envAlias && baseUrl !== previous.baseUrl && !body.apiKey) fail(400, 'credential_binding', 'A managed credential cannot be sent to a different endpoint. Supply a separate key for a new endpoint.');
       value = { ...base, kind, protocol: kind === 'anthropic' ? 'anthropic' : 'openai', baseUrl,
         envAlias: previous?.envAlias || null, credential: body.apiKey ? this.seal(recordId, body.apiKey) : previous?.credential || null,
@@ -120,7 +145,7 @@ export class ControlPlane {
         fail(409, 'release_immutable', 'Publish a new Lab version to change its serving definition.');
       const providerId = id(body.providerId ?? previous?.providerId), provider = (await this.store.get('providers/' + providerId)).data;
       if (!provider || provider.native) fail(400, 'provider_required', 'Choose a compatible or Anthropic connection. Native adapters use their dedicated model route.');
-      if (base.enabled) requireApprovedProvider(this.config, provider);
+      if (base.enabled) requireApprovedProvider(this.config, provider, { registration: true });
       const capabilities = body.capabilities ?? previous?.capabilities ?? ['text'];
       if (!Array.isArray(capabilities) || !capabilities.length || capabilities.some(item => !['text', 'image', 'audio', 'video'].includes(item)) ||
           (provider.protocol === 'anthropic' && capabilities.some(item => !['text', 'image'].includes(item)))) fail(400, 'invalid_capabilities', 'Choose capabilities supported by this provider adapter.');
@@ -295,7 +320,9 @@ export class ControlPlane {
     const { group } = identity.admin ? { group: null } : await this.groupAccess(identity, false);
     if (this.config.requireGroups && identity.kind === 'account' && !identity.admin && !group) return [];
     const [models, providers] = await Promise.all([this.store.list('models'), this.store.list('providers')]);
-    return models.filter(model => (model.native !== 'christopher' || isChristopherAdmin(identity)) && (!group || group.modelIds.includes(model.id)) && model.enabled && (!identity.allowedModels || identity.allowedModels.includes(model.id)) && providers.some(provider => provider.id === model.providerId && provider.enabled && (provider.credential || provider.envAlias || provider.allowAnonymous || provider.native)))
+    const personalDeepSeek = !this.config.production || this.config.providerMigrationMode === 'prepare' ||
+      (identity.kind === 'account' && (await this.personalProviders(identity)).deepseekEnabled);
+    return models.filter(model => (model.native !== 'christopher' || isChristopherAdmin(identity)) && (!group || group.modelIds.includes(model.id)) && model.enabled && (!identity.allowedModels || identity.allowedModels.includes(model.id)) && providers.some(provider => provider.id === model.providerId && provider.enabled && (personalDeepSeek || !isDeepSeek(provider)) && (provider.credential || provider.envAlias || provider.allowAnonymous || provider.native)))
       .map(model => ({ id: model.id, model: model.model, capabilities: model.capabilities, task: model.task, providerId: model.providerId }));
   }
   async authenticateKey(token) {
@@ -438,7 +465,7 @@ export class ControlPlane {
   async checkConnection(collection, recordId, actor) {
     await this.ensure(); const path = collection + '/' + id(recordId), record = (await this.store.get(path)).data;
     if (!record || !['providers', 'integrations'].includes(collection)) fail(404, 'connection_not_found', 'Choose a registered connection.');
-    if (collection === 'providers') requireApprovedProvider(this.config, record);
+    if (collection === 'providers') { await this.assertProviderAccess(actor, record); requireApprovedProvider(this.config, record, { personalDeepSeek: isDeepSeek(record) }); }
     if (record.native || record.protocol === 'vertex-openai') fail(409, 'native_connection', 'Native Vertex calls use runtime identity and their own token-count preflight. No compatible model-discovery check is available.');
     if (collection === 'integrations' && !['rest', 'training'].includes(record.kind)) fail(409, 'storage_agent_required', 'Bucket connections are registered for your ingestion worker. This gateway does not ingest or copy data automatically.');
     const start = Date.now(), key = this.credential(record), headers = {};

@@ -89,6 +89,8 @@ async function load() {
   $('engine').replaceChildren(...engines.map((e, i) => new Option(`${e.name} · ${e.version}`, String(i))));
   setEngineModels(capabilities.routes);
   displayAccount(profile);
+  const personal = await api('/v1/provider-access');
+  $('personal-provider-status').textContent = 'DeepSeek for your account: ' + (personal.deepseekEnabled ? 'enabled' : 'disabled');
   $('engine-count').textContent = String(engines.length);
   $('route-count').textContent = String(capabilities.routes.length);
   $('registry-state').textContent = capabilities.engineCreation ? 'Configured' : 'Not configured';
@@ -209,7 +211,9 @@ $('evaluate').addEventListener('submit', e => { e.preventDefault(); void task(as
 $('download').addEventListener('click', () => download(lastResult, 'colossus-result.json'));
 function reviewChange(user, change) {
   pendingChange = { userId: user.id, ...change };
-  $('access-confirm-text').textContent = Object.hasOwn(change, 'role')
+  $('access-confirm-text').textContent = Object.hasOwn(change, 'deepseekEnabled')
+    ? `${change.deepseekEnabled ? 'Enable' : 'Disable'} DeepSeek for ${user.email} only? When an assigned DeepSeek model is selected, that person's submitted text is processed by DeepSeek. Group model defaults stay unchanged.`
+    : Object.hasOwn(change, 'role')
     ? `Change ${user.email} from ${user.role} to ${change.role}?`
     : `${change.disabled ? 'Suspend' : 'Enable'} the shared Astra account ${user.email}?`;
   $('access-confirmation').hidden = false; controls(); $('confirm-access-change').focus();
@@ -228,7 +232,12 @@ function renderUsers(users) {
     const toggle = document.createElement('button'); toggle.type = 'button'; toggle.textContent = user.status === 'Suspended' ? 'Enable' : 'Suspend'; toggle.className = 'secondary';
     toggle.dataset.locked = String(user.current || (user.role === 'admin' && user.status !== 'Suspended') || user.status === 'Unconfirmed');
     toggle.addEventListener('click', () => reviewChange(user, { disabled: user.status !== 'Suspended' }));
-    actions.className = 'actions'; actions.append(save, toggle); row.append(email, role, state, actions); $('user-rows').append(row);
+    const provider = document.createElement('td'), deepseek = document.createElement('button');
+    deepseek.type = 'button'; deepseek.className = 'secondary'; deepseek.textContent = user.deepseekEnabled ? 'DeepSeek enabled · Disable' : 'Enable DeepSeek';
+    deepseek.setAttribute('aria-label', `${user.deepseekEnabled ? 'Disable' : 'Enable'} DeepSeek for ${user.email}`);
+    deepseek.setAttribute('aria-pressed', String(!!user.deepseekEnabled));
+    deepseek.addEventListener('click', () => reviewChange(user, { deepseekEnabled: !user.deepseekEnabled })); provider.append(deepseek);
+    actions.className = 'actions'; actions.append(save, toggle); row.append(email, role, state, provider, actions); $('user-rows').append(row);
   }
   controls();
 }
@@ -247,8 +256,11 @@ $('users-next').addEventListener('click', () => { userOffset += 50; void task(lo
 $('cancel-access-change').addEventListener('click', () => { pendingChange = undefined; $('access-confirmation').hidden = true; controls(); });
 $('confirm-access-change').addEventListener('click', () => { void task(async () => {
   const change = pendingChange; if (!change) return;
-  await api('/v1/access/users', change, 'PATCH'); pendingChange = undefined; $('access-confirmation').hidden = true;
-  await loadUsers(); $('user-access-status').textContent = 'Shared account updated. Access is checked again on each protected request.';
+  const providerChange = Object.hasOwn(change, 'deepseekEnabled');
+  await api(providerChange ? '/v1/provider-access' : '/v1/access/users', change, 'PATCH'); pendingChange = undefined; $('access-confirmation').hidden = true;
+  await loadUsers();
+  if (providerChange) { const personal = await api('/v1/provider-access'); $('personal-provider-status').textContent = 'DeepSeek for your account: ' + (personal.deepseekEnabled ? 'enabled' : 'disabled'); }
+  $('user-access-status').textContent = providerChange ? 'Personal DeepSeek access updated. Each inference checks it again. Enable the provider and model in Models, then assign the model in User groups. Existing group and product key grants still apply.' : 'Shared account updated. Access is checked again on each protected request.';
 }); });
 controls();
 load().then(() => { $('status').textContent = 'Your Astra account is connected.'; }).catch(error => {

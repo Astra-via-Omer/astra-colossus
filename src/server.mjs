@@ -6,7 +6,7 @@ import { pipeline } from 'node:stream/promises';
 import { pathToFileURL } from 'node:url';
 import { configuration, ApiError, fail, equalSecret, resolveRoute, validateChat } from './config.mjs';
 import { EngineRegistry, validateEngine, engineRequest, validateResult } from './engines.mjs';
-import { runtimeVertexRoute, requireApprovedProvider } from './vertex.mjs';
+import { runtimeVertexRoute, requireApprovedProvider, isDeepSeek } from './vertex.mjs';
 import { CloudRegistry } from './cloudRegistry.mjs';
 import { Sessions } from './sessions.mjs';
 import { UsageMonitor, UsageStream, tokenUsage } from './usage.mjs';
@@ -140,7 +140,8 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
       request.max_tokens ??= route.maxTokens || 4000;
     }
     if (request.stream) request.stream_options = { ...request.stream_options, include_usage: true };
-    requireApprovedProvider(config, route);
+    if (isDeepSeek(route)) await control.assertProviderAccess(identity, route);
+    requireApprovedProvider(config, route, { personalDeepSeek: isDeepSeek(route) });
     const prepared = providerRequest(route, request, task);
     if (runtimeVertexRoute(config, route)) prepared.headers.Authorization = `Bearer ${await vertexTokens.auth()}`;
     const reservation = await control.reserve(identity, route, request, process.requestId, process.calls.length + 1);
@@ -283,6 +284,14 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
         if (control.enabled) { await control.ensure(); const models = await control.store.list('models'); snapshot.rates = models.map(model => ({ route: model.id, providerModel: model.model, rates: model.pricing })); }
         return json(res, snapshot);
       }
+      if (url.pathname === '/v1/provider-access') {
+        operation = 'personal_provider_access'; const actor = await browserIdentity(req);
+        if (method === 'GET') return json(res, await control.personalProviders(actor, url.searchParams.get('userId') || actor.id));
+        if (method !== 'PATCH') fail(405, 'method_not_allowed', 'Use GET or PATCH for personal provider access.');
+        checkOrigin(req);
+        if (!(req.headers['content-type'] || '').startsWith('application/json')) fail(415, 'content_type', 'Use application/json.');
+        return json(res, await control.savePersonalProviders(actor, await boundedJson(req, 4096)));
+      }
       if (url.pathname === '/v1/control' || url.pathname.startsWith('/v1/control/')) {
         operation = 'control_plane'; const actor = requireConsoleAdmin(await browserIdentity(req));
         if (method === 'GET' && url.pathname === '/v1/control') return json(res, await control.snapshot());
@@ -313,8 +322,9 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
           if (search.length > 254 || !Number.isInteger(offset) || offset < 0 || offset > 100000) fail(400, 'invalid_search', 'Supply a short search and a valid page offset.');
           const users = await accountRpc(identity, 'astra_list_users_v2', { p_search: search, p_offset: offset, p_active_only: false });
           if (!Array.isArray(users) || users.length > 50) fail(503, 'access_unavailable', 'Shared user controls returned an invalid list.');
-          return json(res, { users: users.map(user => ({ id: user.user_id, email: user.email, role: user.app_role,
-            status: user.account_status, lastSignInAt: user.last_sign_in_at, current: user.user_id === identity.id })), offset });
+          return json(res, { users: await Promise.all(users.map(async user => ({ id: user.user_id, email: user.email, role: user.app_role,
+            status: user.account_status, lastSignInAt: user.last_sign_in_at, current: user.user_id === identity.id,
+            deepseekEnabled: (await control.personalProviders(identity, user.user_id)).deepseekEnabled }))), offset });
         }
         if (method !== 'PATCH') fail(405, 'method_not_allowed', 'Use GET or PATCH for shared user controls.');
         if (!(req.headers['content-type'] || '').startsWith('application/json')) fail(415, 'content_type', 'Use application/json.');
