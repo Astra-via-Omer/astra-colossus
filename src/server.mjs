@@ -5,7 +5,7 @@ import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { pathToFileURL } from 'node:url';
 import { configuration, ApiError, fail, equalSecret, resolveRoute, validateChat } from './config.mjs';
-import { EngineRegistry, validateEngine, engineRequest, validateResult } from './engines.mjs';
+import { EngineRegistry, validateEngine, engineRequest, validateResult, compactReviewSources } from './engines.mjs';
 import { runtimeVertexRoute, requireApprovedProvider, isDeepSeek } from './vertex.mjs';
 import { CloudRegistry } from './cloudRegistry.mjs';
 import { Sessions } from './sessions.mjs';
@@ -163,12 +163,16 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
     return { response, route, call };
   }
   async function runEngine(engine, input, signal, process, identity) {
-    const { response, route, call } = await upstream(engineRequest(engine, input), signal, process, engine, identity);
+    const originalRequest = engineRequest(engine, input); // Validate canonical identities first, including duplicate pairs.
+    const bounded = (engine.id === 'election-review' && engine.version === '1.0.0') || (engine.id === 'claim-check' && engine.version === '1.1.0');
+    const compact = bounded ? compactReviewSources(input) : null;
+    const { response, route, call } = await upstream(compact ? engineRequest(engine, compact.input) : originalRequest, signal, process, engine, identity);
     let data;
     try {
       data = providerResult(route, await boundedJson(Readable.fromWeb(response.body), 8000000, true));
+      if (compact) data = compact.restore(data);
       monitoring.finishCall(call, 'completed', data.usage, response.status);
-      const result = validateResult(data, input.sources, engine.id === 'election-review' || (engine.id === 'claim-check' && engine.version === '1.1.0') ? 8 : 50);
+      const result = validateResult(data, input.sources, bounded ? 8 : 50);
       call.validation = result.validation;
       return { engine: { id: engine.id, version: engine.version }, model: route.alias, providerModel: route.model,
         ...result, usage: data.usage, colossus: { ...route.routing, model: route.alias, pricing: route.pricing || null } };

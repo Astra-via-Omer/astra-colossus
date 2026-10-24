@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { configuration } from '../src/config.mjs';
 import { createService } from '../src/server.mjs';
-import { builtins, engineRequest, validateResult } from '../src/engines.mjs';
+import { builtins, engineRequest, validateResult, compactReviewSources } from '../src/engines.mjs';
 
 const key = 'synthetic-provider-key';
 const env = { COLOSSUS_REQUIRE_GROUPS: 'false', ASTRA_PROVIDER_CONFIG_JSON: JSON.stringify({ key, model: 'test-model' }), COLOSSUS_ORIGIN: 'http://localhost:4002' };
@@ -70,7 +70,8 @@ test('live review constrains source identities and required fields without chang
 });
 test('failed reviews retain actual token usage and expose bounded diagnostics without leaking rejected content', async t => {
   const usage = { prompt_tokens: 120, completion_tokens: 30, total_tokens: 150, prompt_cache_hit_tokens: 0 };
-  const rejected = [{ ...claim, quote: 'private-rejected-model-quote' }, { ...claim, sectionId: 'wrong' }, { ...claim, support: 5 }];
+  const wire = { ...claim, sourceId: 's0', sectionId: 'p0' };
+  const rejected = [{ ...wire, quote: 'private-rejected-model-quote' }, { ...wire, sectionId: 'wrong' }, { ...wire, support: 5 }];
   const app = await start(t, {}, async () => Response.json({ ...completion(rejected), usage }));
   const response = await app.call('/v1/runs', { engineId: 'claim-check', engineVersion: '1.1.0', input });
   assert.equal(response.status, 502);
@@ -92,6 +93,28 @@ test('election coverage names must appear in the validated quotation and tone re
   assert.deepEqual(result.claims[0].subjects, [subject]); assert.equal(result.claims[0].status, 'unverified');
   const request = engineRequest(builtins.find(e => e.id === 'election-review'), { focus: 'Review the Example election.', sources: [source] });
   assert(request.response_format.json_schema.schema.properties.claims.items.required.includes('subjects'));
+});
+
+test('bounded reviews use compact provider identities and restore exact original pairs before validation', async t => {
+  const long = { focus: 'Review synthetic election reports.', sources: [
+    { ...input.sources[0], sourceId: 'election-' + 'a'.repeat(60), sectionId: 'b'.repeat(100) },
+    { ...input.sources[0], sourceId: 'election-' + 'c'.repeat(60), sectionId: 'b'.repeat(100) },
+  ] };
+  const app = await start(t, {}, async (_url, options) => {
+    const request = JSON.parse(options.body), content = JSON.parse(request.messages.at(-1).content);
+    assert.deepEqual(content.sources.map(source => [source.sourceId, source.sectionId]), [['s0', 'p0'], ['s1', 'p1']]);
+    return Response.json(completion([{ ...claim, sourceId: 's0', sectionId: 'p0' }]));
+  });
+  const response = await app.call('/v1/runs', { engineId: 'election-review', engineVersion: '1.0.0', input: long });
+  assert.equal(response.status, 200);
+  const result = await response.json(); assert.equal(result.claims[0].sourceId, long.sources[0].sourceId); assert.equal(result.claims[0].sectionId, long.sources[0].sectionId);
+  const compact = compactReviewSources(long);
+  const format = engineRequest(builtins.find(engine => engine.id === 'election-review'), compact.input).response_format;
+  assert.deepEqual(format.json_schema.schema.properties.claims.items.properties.sourceId.enum, ['s0', 's1']);
+  for (const pair of [{ sourceId: 's1', sectionId: 'p0' }, { sourceId: 's0', sectionId: 'unknown' }, { sourceId: long.sources[0].sourceId, sectionId: long.sources[0].sectionId }])
+    assert.throws(() => validateResult(compact.restore(completion([{ ...claim, ...pair }])), long.sources), { code: 'validation_failed' });
+  const altered = compact.restore(completion([{ ...claim, sourceId: 's0', sectionId: 'p0', quote: 'Invented source wording.' }]));
+  assert.throws(() => validateResult(altered, long.sources), { code: 'validation_failed' });
 });
 test('persists immutable engine versions and evaluates bounded fixtures', async t => {
   const dir = await mkdtemp(path.join(tmpdir(), 'colossus-test-')); t.after(() => rm(dir, { recursive: true, force: true }));
