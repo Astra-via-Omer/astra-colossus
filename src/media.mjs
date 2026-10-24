@@ -4,7 +4,7 @@ export function mediaConfiguration(env = process.env) {
   if (!env.COLOSSUS_MEDIA_PROJECT) return null;
   const project = env.COLOSSUS_MEDIA_PROJECT, location = env.COLOSSUS_MEDIA_LOCATION || 'global';
   const model = env.COLOSSUS_MEDIA_MODEL;
-  if (!/^[a-z][a-z0-9-]{4,61}[a-z0-9]$/.test(project) || !/^(global|[a-z]+[0-9]?(?:-[a-z0-9]+)+)$/.test(location) || !/^gemini-[a-z0-9.-]{1,100}$/.test(model || '')) throw Error('Invalid Colossus media configuration');
+  if (!/^[a-z][a-z0-9-]{4,61}[a-z0-9]$/.test(project) || !/^(global|eu|us|[a-z]+[0-9]?(?:-[a-z0-9]+)+)$/.test(location) || !/^gemini-[a-z0-9.-]{1,100}$/.test(model || '')) throw Error('Invalid Colossus media configuration');
   return { project, location, model };
 }
 function bytes(data, max) {
@@ -80,7 +80,7 @@ export class MediaObserver {
   async observe(body, signal, onInference) {
     if (!this.config) fail(503, 'media_unconfigured', 'Colossus audio/video analysis has not been configured.');
     const input = validateMedia(body), { project, location, model } = this.config;
-    const host = location === 'global' ? 'aiplatform.googleapis.com' : `${location}-aiplatform.googleapis.com`;
+    const host = ['eu','us'].includes(location) ? `aiplatform.${location}.rep.googleapis.com` : location === 'global' ? 'aiplatform.googleapis.com' : `${location}-aiplatform.googleapis.com`;
     const parts = [{ text: `Current sample: ${input.durationMs} ms. Previous speech (context only): ${JSON.stringify(input.previousTranscript)}. Other selected channels, recognized observations only: ${JSON.stringify(input.otherChannels)}. Compare the current sample with these other channels only when their exact speech or screen text supports a relationship. Return at most four links with exact quotes from both sides and an explanation. Similar reporting is not independent corroboration. Do not invent a relationship for unrelated coverage. Empty links are valid. The relationships are provisional, never evidence of truth.` }, { inlineData: input.audio }];
     for (const frame of input.frames) parts.push({ text: `Sampled video frame at ${frame.offsetMs} ms:` }, { inlineData: { data: frame.data, mimeType: frame.mimeType } });
     const started = Date.now();

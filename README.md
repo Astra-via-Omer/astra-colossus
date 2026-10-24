@@ -221,3 +221,28 @@ Run `node scripts/provision-product-routing.mjs --project astra-via --account YO
 Evidence's optional assistant uses `evidence.review` through the same gateway and group assignment. Its output is trace-checked AI assistance, with no automatic human review submission, funding or publication.
 
 Christopher’s private Gravity Well includes a Reality Gap report with the original Workspace rubric assessments, exact formal bounds where supplied, and aligned learned numerical references. See [the integration and gap definitions](docs/CHRISTOPHER-WORKSPACE.md).
+
+## Production data-provider rollout
+
+Production client credentials are explicit (`COLOSSUS_API_KEYS_JSON`, normally
+`[]` with scoped keys in Firestore). A provider key is never an accepted client
+key. `COLOSSUS_SESSION_SECRET` must be a dedicated, pinned Secret Manager version.
+Changing it signs console users out; product bearer credentials are independent.
+Account inference requires a verified product backend key or the Colossus browser
+session, including while product-license provisioning remains staged.
+
+Set `COLOSSUS_VERTEX_PROJECT`, `COLOSSUS_VERTEX_LOCATION=eu`, and
+`COLOSSUS_VERTEX_MODEL=gemini-3.1-flash-lite` for Google runtime OAuth through the
+EU regional processing endpoint. OAuth is bound to that exact host, project and
+location immediately before transmission. It is never stored in the registry.
+Native media uses the same EU endpoint when its location is `eu`.
+
+For a migration from an existing registry, deploy a preparation revision with
+`COLOSSUS_PROVIDER_MIGRATION_MODE=prepare`, the existing provider secret version,
+and the new dedicated session secret. This mode is temporary: switch all active
+registry models and their group/key assignments atomically, verify synthetic
+product calls, then set the deployment variable and runtime mode to `strict`.
+Strict is the default, blocks DeepSeek hosts even in a stale registry, and CI
+removes the legacy provider secret mount. Preserve historical audit/usage records.
+Disable project AI caching and verify applicable provider retention/contract terms
+separately; the endpoint configuration alone is not a zero-retention attestation.

@@ -1,4 +1,5 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
+import { vertexConfiguration } from './vertex.mjs';
 import { mediaConfiguration } from './media.mjs';
 
 export class ApiError extends Error {
@@ -15,21 +16,23 @@ function integer(env, name, fallback, min, max) {
   return n;
 }
 export function configuration(env = process.env) {
+  const vertex = vertexConfiguration(env);
   const managed = JSON.parse(env.ASTRA_PROVIDER_CONFIG_JSON || '{}');
   const providerKey = env.DEEPSEEK_API_KEY || managed.key || '';
   const model = env.DEEPSEEK_MODEL || managed.model || '';
-  const keys = JSON.parse(env.COLOSSUS_API_KEYS_JSON || JSON.stringify(providerKey ? [providerKey] : []));
+  const keys = JSON.parse(env.COLOSSUS_API_KEYS_JSON || JSON.stringify(env.NODE_ENV !== 'production' && providerKey ? [providerKey] : []));
   if (!Array.isArray(keys) || keys.some(k => typeof k !== 'string' || !k || /\s/.test(k))) throw Error('Invalid client keys');
   const routes = JSON.parse(env.COLOSSUS_ROUTES_JSON || JSON.stringify({
-    'astra-default': { baseUrl: 'https://api.deepseek.com', model, capabilities: ['text'], defaults: { thinking: { type: 'disabled' } } },
+    'astra-default': vertex ? { baseUrl: vertex.baseUrl, model: 'google/' + vertex.model, protocol: 'vertex-openai', capabilities: ['text'] } : { baseUrl: 'https://api.deepseek.com', model, capabilities: ['text'], defaults: { thinking: { type: 'disabled' } } },
   }));
   if (!routes || typeof routes !== 'object' || Array.isArray(routes) || !Object.keys(routes).length) throw Error('Invalid model routes');
   for (const [id, route] of Object.entries(routes)) {
     const url = new URL(route.baseUrl);
     if (!/^[a-zA-Z0-9._:-]{1,120}$/.test(id) || url.username || url.password || url.search || url.hash ||
       (url.protocol !== 'https:' && !(env.NODE_ENV !== 'production' && url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)))) throw Error('Invalid provider route URL');
-    route.key = route.keyEnv ? env[route.keyEnv] : providerKey;
-    if (!route.key || !route.model || typeof route.model !== 'string') throw Error('Each route needs a key and model');
+    route.key = route.protocol === 'vertex-openai' ? '' : route.keyEnv ? env[route.keyEnv] : providerKey;
+    if (route.protocol === 'vertex-openai' && (!vertex || url.href.replace(/\/$/, '') !== vertex.baseUrl)) throw Error('Vertex credentials require the configured regional endpoint');
+    if ((!route.key && route.protocol !== 'vertex-openai') || !route.model || typeof route.model !== 'string') throw Error('Each route needs a key or runtime identity and a model');
     route.capabilities ??= ['text'];
     if (!Array.isArray(route.capabilities) || route.capabilities.some(c => !['text', 'image', 'audio', 'video'].includes(c))) throw Error('Invalid capabilities');
     route.baseUrl = url.href.replace(/\/$/, '');
@@ -54,8 +57,11 @@ export function configuration(env = process.env) {
   if (env.COLOSSUS_VAULT_SECRET && env.COLOSSUS_VAULT_SECRET.length < 32) throw Error('COLOSSUS_VAULT_SECRET needs at least 32 characters');
   if (env.NODE_ENV === 'production' && env.COLOSSUS_CONTROL_DATABASE && !env.COLOSSUS_VAULT_SECRET) throw Error('A dedicated COLOSSUS_VAULT_SECRET is required for the operations database');
   if (env.NODE_ENV === 'production' && !origin.startsWith('https://')) throw Error('Production needs an HTTPS COLOSSUS_ORIGIN');
+  if (env.NODE_ENV === 'production' && !env.COLOSSUS_SESSION_SECRET) throw Error('Production needs a dedicated COLOSSUS_SESSION_SECRET');
+  if (env.NODE_ENV === 'production' && providerKey && keys.some(key => equalSecret(key, providerKey))) throw Error('Provider credentials cannot be gateway client credentials');
   if(env.COLOSSUS_MEDIA_INGEST_KEY && (env.COLOSSUS_MEDIA_INGEST_KEY.length<32 || env.COLOSSUS_MEDIA_INGEST_KEY.length>512 || /\s/.test(env.COLOSSUS_MEDIA_INGEST_KEY))) throw Error('Invalid media gateway credential');
-  return { routes, keys, media: mediaConfiguration(env), mediaIngestKey:env.COLOSSUS_MEDIA_INGEST_KEY || '', adminKey: env.COLOSSUS_ADMIN_KEY || '', origin,
+  return { routes, keys, vertex, providerMigrationMode: env.COLOSSUS_PROVIDER_MIGRATION_MODE === 'prepare' ? 'prepare' : 'strict',
+    managedProviderKey: providerKey, media: mediaConfiguration(env), mediaIngestKey:env.COLOSSUS_MEDIA_INGEST_KEY || '', adminKey: env.COLOSSUS_ADMIN_KEY || '', origin,
     christopherCaptureEnabled: env.COLOSSUS_CHRISTOPHER_CAPTURE === 'true', christopherRetentionReady: env.COLOSSUS_CHRISTOPHER_RETENTION_READY === 'true',
     requireGroups: env.COLOSSUS_REQUIRE_GROUPS !== 'false',
     freeGroupId: env.COLOSSUS_FREE_GROUP_ID || 'astra-free-pdf',
