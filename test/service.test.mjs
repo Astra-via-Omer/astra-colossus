@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { configuration } from '../src/config.mjs';
 import { createService } from '../src/server.mjs';
-import { builtins, validateResult } from '../src/engines.mjs';
+import { builtins, engineRequest, validateResult } from '../src/engines.mjs';
 
 const key = 'synthetic-provider-key';
 const env = { COLOSSUS_REQUIRE_GROUPS: 'false', ASTRA_PROVIDER_CONFIG_JSON: JSON.stringify({ key, model: 'test-model' }), COLOSSUS_ORIGIN: 'http://localhost:4002' };
@@ -55,6 +55,43 @@ test('checks exact source identity, exclusions, ratings, and timestamp provenanc
   const result = validateResult(completion([claim, { ...claim, sectionId: 'wrong' }, { ...claim, support: 7 }]), input.sources);
   assert.equal(result.claims.length, 1); assert.equal(result.excluded.length, 2); assert.equal(result.claims[0].timestampMs, 1200); assert.equal(result.claims[0].distance, 40);
   assert.throws(() => validateResult(completion([{ ...claim, quote: 'Invented' }]), input.sources), /No claims passed/);
+});
+test('live review constrains source identities and required fields without changing immutable legacy engines', () => {
+  const legacy = engineRequest(builtins.find(e => e.id === 'claim-check' && e.version === '1.0.0'), input);
+  const live = engineRequest(builtins.find(e => e.id === 'claim-check' && e.version === '1.1.0'), input);
+  assert.equal(legacy.response_format.type, 'json_object');
+  assert.equal(live.response_format.type, 'json_schema'); assert.equal(live.max_tokens, 4000);
+  const schema = live.response_format.json_schema.schema.properties.claims;
+  assert.equal(schema.maxItems, 8);
+  assert.deepEqual(schema.items.properties.sectionId.enum, ['1']);
+  for (const field of Object.keys(claim)) assert(schema.items.required.includes(field));
+  // Schema conformance never replaces the server's semantic checks.
+  assert.throws(() => validateResult(completion([{ ...claim, quote: 'Invented' }]), input.sources), { code: 'validation_failed' });
+});
+test('failed reviews retain actual token usage and expose bounded diagnostics without leaking rejected content', async t => {
+  const usage = { prompt_tokens: 120, completion_tokens: 30, total_tokens: 150, prompt_cache_hit_tokens: 0 };
+  const rejected = [{ ...claim, quote: 'private-rejected-model-quote' }, { ...claim, sectionId: 'wrong' }, { ...claim, support: 5 }];
+  const app = await start(t, {}, async () => Response.json({ ...completion(rejected), usage }));
+  const response = await app.call('/v1/runs', { engineId: 'claim-check', engineVersion: '1.1.0', input });
+  assert.equal(response.status, 502);
+  const body = await response.json();
+  assert.equal(body.error.code, 'validation_failed');
+  assert.deepEqual(body.error.validation, { accepted: 0, excluded: 3, reasons: { quote_mismatch: 1, unknown_source: 1, invalid_ratings: 1 } });
+  assert.deepEqual(body.usage, usage); assert.equal(body.model, 'astra-default');
+  assert(!JSON.stringify(body).includes('private-rejected-model-quote'));
+  assert(!JSON.stringify(app.logs).includes('private-rejected-model-quote'));
+  const record = [...app.monitoring.local.values()].find(r => r.requestId === body.error.requestId);
+  assert.equal(record.status, 'failed'); assert.equal(record.calls[0].usage.totalTokens, 150);
+  assert.deepEqual(record.calls[0].validation, body.error.validation);
+});
+test('election coverage names must appear in the validated quotation and tone remains a separate model judgment', () => {
+  const source = { sourceId: 'local', sectionId: 'news', text: 'Example Party says its plan will reduce costs; critics dispute its figures.' };
+  const subject = { name: 'Example Party', kind: 'party', tone: 'mixed', explanation: 'The quote presents a claim and an attributed objection.' };
+  const result = validateResult(completion([{ ...claim, quote: source.text, sourceId: source.sourceId, sectionId: source.sectionId,
+    subjects: [subject, { ...subject, name: 'Invented Party' }, { ...subject, tone: 'true' }] }]), [source]);
+  assert.deepEqual(result.claims[0].subjects, [subject]); assert.equal(result.claims[0].status, 'unverified');
+  const request = engineRequest(builtins.find(e => e.id === 'election-review'), { focus: 'Review the Example election.', sources: [source] });
+  assert(request.response_format.json_schema.schema.properties.claims.items.required.includes('subjects'));
 });
 test('persists immutable engine versions and evaluates bounded fixtures', async t => {
   const dir = await mkdtemp(path.join(tmpdir(), 'colossus-test-')); t.after(() => rm(dir, { recursive: true, force: true }));
