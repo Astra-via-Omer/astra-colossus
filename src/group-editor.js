@@ -29,7 +29,7 @@
     const provider = catalog.providers.find(value => value.id === model.providerId);
     if (!model.enabled || !provider?.enabled) return 'This model or its provider is paused. Enable it in Models or Providers before use.';
     if (!provider.credentialConfigured && !provider.allowAnonymous) return 'The provider needs a connection credential before use.';
-    const minimum = { workflow: 8000, enigma: 2000, evidence: 1800 }[systemId];
+    const minimum = { workflow: 8000, enigma: 4000, evidence: 1800 }[systemId];
     if (textModel(model) && minimum && model.maxTokens < minimum) return 'Increase this model’s output limit in Models to at least ' + minimum.toLocaleString() + ' tokens for this product.';
     if (catalog.systems.find(value => value.id === systemId)?.enabled === false) return 'This product is paused in Astra systems.';
     if (systemId && !catalog.keys.some(key => key.systemId === systemId && activeKey(key) && key.allowedModels.includes(id)))
