@@ -381,14 +381,24 @@ export class ControlPlane {
     const inputBound = Number.isSafeInteger(inputTokens) && inputTokens >= 0 ? inputTokens : Buffer.byteLength(JSON.stringify(request)) + 1024, outputBound = route.task === 'embedding' ? 0 : request.max_tokens || route.maxTokens || 4000;
     const reservedUsd = route.pricing ? (inputBound * Math.max(route.pricing.inputPerMillion, route.pricing.cachedInputPerMillion || 0) + outputBound * route.pricing.outputPerMillion) / 1000000 : null;
     if (system.monthlyBudgetUsd !== null && reservedUsd === null) fail(409, 'budget_pricing_required', 'Add model prices before using a system with a spending cap.');
-    const [wallet] = await this.store.mutate([walletPath, reservationPath], ([existing, previous]) => {
+    const userPath = identity.kind === 'account' ? 'userQuotas/' + createHash('sha256').update(identity.id).digest('hex') : null;
+    const day = now().slice(0,10);
+    const [wallet] = await this.store.mutate([walletPath, reservationPath, ...(userPath ? [userPath] : [])], ([existing, previous, user]) => {
       if (previous) fail(409, 'reservation_exists', 'This model call was already admitted.');
       const value = existing || { id: systemId + '-' + month, systemId, month, spentUsd: 0, reservedUsd: 0, unpricedCalls: 0, tokens: 0, calls: 0, minute, minuteCalls: 0 };
       if (value.minute !== minute) { value.minute = minute; value.minuteCalls = 0; }
       if (value.minuteCalls >= system.requestsPerMinute) fail(429, 'system_rate_limit', 'This system reached its requests-per-minute limit.');
       if (system.monthlyBudgetUsd !== null && value.spentUsd + value.reservedUsd + reservedUsd > system.monthlyBudgetUsd + 1e-12) fail(402, 'system_budget', 'This system has reached its monthly spending cap.');
+      let quota;
+      if (userPath) {
+        quota = user || {day,minute,dailyCalls:0,minuteCalls:0};
+        if (quota.day !== day) { quota.day=day;quota.dailyCalls=0; }
+        if (quota.minute !== minute) { quota.minute=minute;quota.minuteCalls=0; }
+        if (quota.minuteCalls >= this.config.userRequestsPerMinute || quota.dailyCalls >= this.config.userCallsPerDay) fail(429,'user_rate_limit','Your account has reached its processing limit. Try again later.');
+        quota.dailyCalls++;quota.minuteCalls++;quota.updatedAt=now();
+      }
       value.reservedUsd += reservedUsd || 0; value.minuteCalls++; value.calls++; value.updatedAt = now();
-      return [value, { id: requestId + '-' + callIndex, systemId, walletPath, reservedUsd: reservedUsd || 0, status: 'reserved', at: now() }];
+      return [value, { id: requestId + '-' + callIndex, systemId, walletPath, reservedUsd: reservedUsd || 0, status: 'reserved', at: now() }, ...(userPath ? [quota] : [])];
     });
     return { path: reservationPath, walletPath, systemId, reservedUsd: reservedUsd || 0, month: wallet.month };
   }

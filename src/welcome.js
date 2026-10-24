@@ -1,8 +1,8 @@
 const form = document.getElementById('welcome-login'), status = document.getElementById('welcome-status');
-let busy = false;
+let busy = false, mfaRequired = false;
 const destination = () => location.hash === '#guide' ? '/app#guide' : '/app';
 async function session(method = 'GET', body) {
-  const response = await fetch('/session', { method, credentials: 'same-origin',
+  const response = await fetch(mfaRequired && method === 'POST' ? '/session/mfa' : '/session', { method, credentials: 'same-origin',
     headers: body ? { 'Content-Type': 'application/json' } : {}, ...(body ? { body: JSON.stringify(body) } : {}) });
   const data = await response.json();
   if (!response.ok) { const error = Error(data.error?.message || 'Account access could not be checked.'); error.status = response.status; throw error; }
@@ -19,7 +19,17 @@ function signedIn(data) {
 form.addEventListener('submit', async event => {
   event.preventDefault(); if (busy) return; busy = true;
   document.getElementById('welcome-submit').disabled = true; status.textContent = 'Checking your Astra account…';
-  try { await session('POST', Object.fromEntries(new FormData(form))); form.reset(); location.assign(destination()); }
+  try {
+    const data = await session('POST', mfaRequired ? {code:document.getElementById('welcome-code').value} : Object.fromEntries(new FormData(form)));
+    if (data.mfaRequired) {
+      mfaRequired=true;document.getElementById('welcome-credentials').hidden=true;
+      for (const id of ['welcome-email','welcome-password']) document.getElementById(id).disabled=true;
+      document.getElementById('welcome-password').value='';document.getElementById('welcome-mfa').hidden=false;
+      const code=document.getElementById('welcome-code');code.disabled=false;code.required=true;code.focus();
+      document.getElementById('welcome-submit').textContent='Verify and sign in';status.textContent='Enter the code from your authenticator.';return;
+    }
+    form.reset();location.assign(destination());
+  }
   catch (error) { status.textContent = error.message; document.getElementById('welcome-password').value = ''; }
   finally { busy = false; document.getElementById('welcome-submit').disabled = false; }
 });
@@ -34,3 +44,5 @@ status.textContent = ({ denied: 'This Astra account cannot access Colossus. Cont
   signin: 'Sign in to open your protected engine room.', expired: 'Your session has ended. Sign in again.',
   signedout: 'You are signed out of Colossus.' })[reason] || (location.hash === '#guide' ? 'Sign in to open the step-by-step guide.' : '');
 session().then(signedIn).catch(error => { if (error.status !== 401) status.textContent = error.message; });
+
+document.getElementById('welcome-restart').addEventListener('click', async () => { try { await session('DELETE'); location.reload(); } catch (error) { status.textContent=error.message; } });

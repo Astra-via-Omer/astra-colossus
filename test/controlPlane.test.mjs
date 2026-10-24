@@ -273,3 +273,17 @@ test('free PDF accounts inherit only the server-authenticated Workflow group and
   await control.save('groups',{id:'explicit',name:'Explicit assignment',modelIds:['astra-default'],memberIds:['free-user'],enabled:false},actor);
   await assert.rejects(control.groupAccess(identity),{code:'group_paused'});
 });
+
+
+test('atomic per-account quotas span system keys without preventing another account from processing',async()=>{
+ const {config,control}=plane();config.userRequestsPerMinute=2;config.userCallsPerDay=3;
+ const route={alias:'astra-default',maxTokens:10,pricing:prices},request={messages:[{role:'user',content:'Synthetic'}],max_tokens:10};
+ const identity={...actor,systemId:'workflow'};
+ const outcomes=await Promise.allSettled(Array.from({length:3},(_,i)=>control.reserve(identity,route,request,'user-limit-'+i,1)));
+ assert.equal(outcomes.filter(value=>value.status==='fulfilled').length,2);
+ assert.equal(outcomes.filter(value=>value.status==='rejected'&&value.reason.code==='user_rate_limit').length,1);
+ await assert.rejects(control.reserve({...identity,systemId:'enigma'},route,request,'other-key',1),{code:'user_rate_limit'});
+ await control.reserve({...identity,id:'different-account'},route,request,'other-account',1);
+ const quota=[...control.store.memory].find(([path])=>path.startsWith('userQuotas/'))[1].data;assert.equal(quota.dailyCalls,2);
+ const wallet=(await control.store.get('wallets/workflow-'+new Date().toISOString().slice(0,7))).data;assert.equal(wallet.calls,3,'Rejected quota requests do not consume budget reservations');
+});
