@@ -120,6 +120,21 @@ test('personal display API requires an approved account cookie and same-origin w
   assert(!JSON.stringify(app.logs).includes('synthetic-account-token'));
 });
 
+test('personal provider controls require a browser admin, isolate users and reject foreign origins', async t => {
+  const app = await start(t), { cookie } = await app.login();
+  assert.equal((await app.call('/v1/provider-access')).status, 401);
+  assert.equal((await app.call('/v1/provider-access', undefined, 'GET', undefined, { Authorization: 'Bearer synthetic-machine-key' })).status, 401);
+  assert.equal((await (await app.call('/v1/provider-access', cookie)).json()).deepseekEnabled, false);
+  assert.equal((await app.call('/v1/provider-access', cookie, 'PATCH', { deepseekEnabled: true }, { Origin: 'https://foreign.example' })).status, 403);
+  assert.equal((await app.call('/v1/provider-access', cookie, 'PATCH', { userId: otherId, deepseekEnabled: true })).status, 200);
+  assert.equal((await (await app.call('/v1/provider-access', cookie)).json()).deepseekEnabled, false);
+  assert.equal((await (await app.call('/v1/provider-access?userId=' + otherId, cookie)).json()).deepseekEnabled, true);
+  app.state.user.app_metadata.role = 'participant';
+  assert.equal((await app.call('/v1/provider-access?userId=' + otherId, cookie)).status, 403);
+  assert.equal((await app.call('/v1/provider-access', cookie, 'PATCH', { deepseekEnabled: true })).status, 403);
+  assert.equal((await (await app.call('/v1/provider-access', cookie)).json()).deepseekEnabled, false);
+});
+
 test('logout, replacement login and server expiry prevent cookie replay', async t => {
   const app = await start(t);
   const first = await app.login(), second = await app.login(first.cookie);

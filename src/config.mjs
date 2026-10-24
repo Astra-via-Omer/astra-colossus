@@ -107,10 +107,13 @@ export function validateChat(body, route) {
   for (const modality of modalities) if (!route.capabilities.includes(modality)) fail(415, 'unsupported_modality', `This model route does not support ${modality}. Use a capable route or provide a transcript.`);
   if (body.max_tokens !== undefined && (!Number.isInteger(body.max_tokens) || body.max_tokens < 1 || body.max_tokens > 65536)) fail(400, 'invalid_tokens', 'max_tokens must be 1–65536.');
   // Only inference fields cross the provider boundary; caller URLs and credentials never do.
-  const allowed = ['messages', 'stream', 'max_tokens', 'temperature', 'top_p', 'stop', 'response_format', 'tools', 'tool_choice', 'stream_options', 'thinking', 'frequency_penalty', 'presence_penalty'];
+  const deepseek = new URL(route.baseUrl).hostname === 'api.deepseek.com';
+  if (deepseek && body.reasoning_effort !== undefined && !['low', 'high', 'max'].includes(body.reasoning_effort)) fail(400, 'invalid_reasoning_effort', 'Choose low, high or max reasoning effort.');
+  const allowed = ['messages', 'stream', 'max_tokens', 'temperature', 'top_p', 'stop', 'response_format', 'tools', 'tool_choice', 'stream_options', 'thinking', 'reasoning_effort', 'frequency_penalty', 'presence_penalty'];
   const request = { ...route.defaults, ...Object.fromEntries(allowed.filter(k => body[k] !== undefined).map(k => [k, body[k]])), model: route.model };
   // Existing Astra stages send DeepSeek's thinking option. Other providers opt in
   // through route defaults rather than receiving vendor fields automatically.
-  if (new URL(route.baseUrl).hostname !== 'api.deepseek.com' && !Object.hasOwn(route.defaults || {}, 'thinking')) delete request.thinking;
+  if (!deepseek && !Object.hasOwn(route.defaults || {}, 'thinking')) delete request.thinking;
+  if (!deepseek && !Object.hasOwn(route.defaults || {}, 'reasoning_effort')) delete request.reasoning_effort;
   return request;
 }

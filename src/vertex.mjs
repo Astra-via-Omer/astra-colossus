@@ -14,9 +14,18 @@ export function runtimeVertexRoute(config, route) {
   return true;
 }
 
-export function requireApprovedProvider(config, route) {
+export const isDeepSeek = route => {
+  const host = new URL(route.baseUrl).hostname.toLowerCase();
+  return host === 'deepseek.com' || host.endsWith('.deepseek.com');
+};
+export function requireApprovedProvider(config, route, { personalDeepSeek = false, registration = false } = {}) {
   const host = new URL(route.baseUrl).hostname.toLowerCase();
   if (config.production && config.providerMigrationMode !== 'prepare' && (host === 'deepseek.com' || host.endsWith('.deepseek.com'))) {
+    // Registry metadata does not send evidence. Inference and credential checks
+    // still require a fresh account-specific permission on every request.
+    const url = new URL(route.baseUrl);
+    if ((registration || personalDeepSeek) && host === 'api.deepseek.com' && url.protocol === 'https:' && !url.port &&
+        !url.username && !url.password && !url.search && !url.hash && ['/', '/v1'].includes(url.pathname)) return;
     fail(503, 'provider_policy', 'This analysis route is unavailable under the production data policy.');
   }
 }

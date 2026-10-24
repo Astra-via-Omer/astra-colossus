@@ -289,13 +289,33 @@ test('atomic per-account quotas span system keys without preventing another acco
 });
 
 
-test('strict production policy blocks retired provider registration and connection checks before any network call',async()=>{
+test('DeepSeek registration sends no evidence and connection checks require a personal grant',async()=>{
  const {config,control,store}=plane();await control.ensure();config.production=true;config.providerMigrationMode='strict';
  let calls=0;control.fetch=async()=>{calls++;throw Error('Must not send credentials');};
- await assert.rejects(control.save('providers',{id:'retired',name:'Retired',kind:'compatible',baseUrl:'https://api.deepseek.com',apiKey:'synthetic'},actor),{code:'provider_policy'});
- await store.mutate(['providers/retired'],()=>[{id:'retired',name:'Retired',kind:'compatible',baseUrl:'https://api.deepseek.com',enabled:false,credential:null}]);
- await assert.rejects(control.checkConnection('providers','retired',actor),{code:'provider_policy'});
- await assert.rejects(control.save('models',{id:'retired-model',name:'Retired',providerId:'retired',model:'synthetic'},actor),{code:'provider_policy'});
+ await control.save('providers',{id:'retired',name:'DeepSeek',kind:'compatible',baseUrl:'https://api.deepseek.com',apiKey:'synthetic'},actor);
+ await assert.rejects(control.checkConnection('providers','retired',actor),{code:'personal_provider_disabled'});
+ await control.save('models',{id:'retired-model',name:'DeepSeek Flash',providerId:'retired',model:'deepseek-flash'},actor);
+ await assert.rejects(control.save('providers',{id:'other-deepseek',name:'Unapproved',kind:'compatible',baseUrl:'https://other.deepseek.com',apiKey:'synthetic'},actor),{code:'provider_policy'});
  const archived=await control.save('providers',{id:'retired',enabled:false},actor);assert.equal(archived.enabled,false);assert.equal(calls,0);
  assert((await store.get('providers/retired')).data,'Historical registry records remain');
+});
+
+test('the production gateway rejects DeepSeek before model calls and billing, then rechecks revocation', async t => {
+ const app = await service(t); app.control.config.production = true;
+ // Substitute durable usage storage with the test's record store; provider
+ // admission, authorization and budget reservations still run in the gateway.
+ app.monitoring.save = async record => app.monitoring.local.set(record.requestId, structuredClone(record));
+ let response = await app.call('/v1/chat/completions', { messages: [{ role: 'user', content: 'Synthetic private source.' }] });
+ assert.equal(response.status, 403); assert.equal((await response.json()).error.code, 'personal_provider_disabled');
+ assert.equal(app.requests.length, 0); assert.equal((await app.control.store.list('wallets')).length, 0);
+ await app.control.savePersonalProviders(actor, { deepseekEnabled: true });
+ response = await app.call('/v1/chat/completions', { messages: [{ role: 'user', content: 'Synthetic private source.' }] });
+ assert.equal(response.status, 200); assert.equal(app.requests.length, 1);
+ const key = (await app.control.issueKey({ systemId: 'enigma', name: 'Synthetic key', allowedModels: ['astra-default'], requireGroup: false, expiresInDays: 1 }, actor)).oneTimeKey;
+ response = await app.call('/v1/chat/completions', { messages: [{ role: 'user', content: 'Synthetic private source.' }] }, key);
+ assert.equal(response.status, 403); assert.equal(app.requests.length, 1);
+ await app.control.savePersonalProviders(actor, { deepseekEnabled: false });
+ response = await app.call('/v1/chat/completions', { messages: [{ role: 'user', content: 'Synthetic private source.' }] });
+ assert.equal(response.status, 403); assert.equal(app.requests.length, 1);
+ assert(!JSON.stringify(app.logs).includes('Synthetic private source.'));
 });

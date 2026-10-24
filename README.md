@@ -242,8 +242,24 @@ For a migration from an existing registry, deploy a preparation revision with
 and the new dedicated session secret. This mode is temporary: switch all active
 registry models and their group/key assignments atomically, verify synthetic
 product calls, then set the deployment variable and runtime mode to `strict`.
-Strict is the default, blocks DeepSeek hosts even in a stale registry, and CI
-removes the legacy provider secret mount. Preserve historical audit/usage records.
+Strict is the default and CI removes the legacy provider secret mount. DeepSeek
+inference and connection checks require an explicit, audited per-person grant in
+**Users & access**. Every account starts disabled, including administrators;
+another group member or a service key alone never inherits the grant. Revocation
+is checked on the next request across gateway instances. Metadata registration
+does not send evidence and may enable the official `https://api.deepseek.com`
+connection (optionally `/v1`); other DeepSeek hosts remain blocked. Existing
+encrypted vault credentials can be used without restoring the legacy mount.
+Provider/model availability, group assignments and product key scopes still
+apply. Enabling a person does not change any group's Gemini defaults. The
+browser-admin `GET/PATCH /v1/provider-access` API reads only the current person's
+setting unless the caller is an administrator, and writes require a same-origin
+administrator session. Preserve historical audit/usage records.
+
+DeepSeek chat defaults to non-thinking mode unless the request explicitly enables
+thinking. Its JSON output adapter retains the engine schema in the instruction
+and applies the same exact-quote and source-identity validation to the response;
+it does not claim native strict-schema enforcement by DeepSeek.
 Disable project AI caching and verify applicable provider retention/contract terms
 separately; the endpoint configuration alone is not a zero-retention attestation.
 
