@@ -1,6 +1,20 @@
 import { Transform } from 'node:stream';
 import { fail } from './config.mjs';
 
+/** Retain bounded categories, never a provider's echoed input or free-form error. */
+export function providerRejectionInfo(data) {
+  const error = (Array.isArray(data) ? data[0] : data)?.error;
+  const message = String(typeof error === 'string' ? error : error?.message || '').slice(0, 12000).toLowerCase();
+  const category = /(?:schema|constraint).*(?:complex|too many|states)/.test(message) ? 'schema_complexity'
+    : /schema|response_format|responseformat/.test(message) ? 'schema_rejected'
+    : /safety|prohibited|blocked/.test(message) ? 'safety_block'
+    : /max.tokens|output.tokens|token.*limit/.test(message) ? 'token_limit'
+    : /unknown.*(?:field|name)|unrecognized|unsupported|not supported/.test(message) ? 'unsupported_parameter'
+    : 'request_rejected';
+  return { category, parameters: ['max_tokens', 'response_format', 'response_schema', 'thinking', 'reasoning_effort', 'maxlength', 'enum'].filter(name => message.includes(name)),
+    ...(['INVALID_ARGUMENT', 'PERMISSION_DENIED', 'RESOURCE_EXHAUSTED', 'UNAVAILABLE'].includes(error?.status) ? { status: error.status } : {}) };
+}
+
 export function providerRequest(route, request, task = 'chat') {
   if (task === 'chat' && new URL(route.baseUrl).hostname === 'api.deepseek.com') {
     // DeepSeek supports JSON output; source identity and quotations still pass

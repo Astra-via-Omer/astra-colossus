@@ -4,7 +4,7 @@ import { configuration, validateChat } from '../src/config.mjs';
 import { ControlPlane } from '../src/controlPlane.mjs';
 import { ControlStore } from '../src/controlStore.mjs';
 import { requireApprovedProvider } from '../src/vertex.mjs';
-import { providerRequest } from '../src/providerAdapters.mjs';
+import { providerRequest, providerRejectionInfo } from '../src/providerAdapters.mjs';
 
 const admin = { kind: 'account', admin: true, id: '11111111-1111-1111-1111-111111111111' };
 const person = { kind: 'account', admin: false, id: '22222222-2222-2222-2222-222222222222' };
@@ -69,4 +69,11 @@ test('DeepSeek JSON compatibility retains the schema and defaults to economical 
   assert.equal(request.response_format.type, 'json_schema', 'The immutable engine request is unchanged');
   const thinking = providerRequest(endpoint, validateChat({ messages: request.messages, thinking: { type: 'enabled' }, reasoning_effort: 'low' }, endpoint));
   assert.equal(thinking.request.thinking.type, 'enabled'); assert.equal(thinking.request.reasoning_effort, 'low');
+});
+
+test('provider rejection diagnostics never retain echoed source material', () => {
+  const rejection = providerRejectionInfo({ error: { status: 'INVALID_ARGUMENT', message: 'The response_schema is too complex. Synthetic-private-echo.' } });
+  assert.equal(rejection.category, 'schema_complexity'); assert.deepEqual(rejection.parameters, ['response_schema']);
+  assert(!JSON.stringify(rejection).includes('Synthetic-private-echo'));
+  assert.deepEqual(providerRejectionInfo({ error: 'Unknown field thinking, private input is not a diagnostic.' }), { category: 'unsupported_parameter', parameters: ['thinking'] });
 });
