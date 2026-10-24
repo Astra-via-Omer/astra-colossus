@@ -65,6 +65,8 @@ export function configuration(env = process.env) {
     christopherCaptureEnabled: env.COLOSSUS_CHRISTOPHER_CAPTURE === 'true', christopherRetentionReady: env.COLOSSUS_CHRISTOPHER_RETENTION_READY === 'true',
     requireGroups: env.COLOSSUS_REQUIRE_GROUPS !== 'false',
     freeGroupId: env.COLOSSUS_FREE_GROUP_ID || 'astra-free-pdf',
+    userRequestsPerMinute: integer(env, 'COLOSSUS_USER_REQUESTS_PER_MINUTE', 30, 1, 10000),
+    userCallsPerDay: integer(env, 'COLOSSUS_USER_CALLS_PER_DAY', 1000, 1, 1000000),
     maxInflight: integer(env, 'COLOSSUS_MAX_INFLIGHT', 16, 1, 1000),
     timeout: integer(env, 'COLOSSUS_TIMEOUT_MS', 90000, 10, 600000),
     bodyLimit: integer(env, 'COLOSSUS_BODY_LIMIT', 2000000, 1024, 16000000),

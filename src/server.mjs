@@ -73,10 +73,15 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
     const name = user.user_metadata?.full_name || user.user_metadata?.name;
     return { kind: 'account', admin: role === 'admin', astraAdmin: user.app_metadata?.role === 'admin', role, id: user.id,
       email: typeof user.email === 'string' ? user.email.slice(0, 254) : '',
+      aal2: (() => { try { return JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString()).aal === 'aal2'; } catch { return false; } })(),
+      totpFactor: Array.isArray(user.factors) ? user.factors.find(f => f.status === 'verified' && f.factor_type === 'totp' && /^[a-f0-9-]{36}$/i.test(f.id || ''))?.id : undefined,
       name: typeof name === 'string' ? name.slice(0, 80) : '', workspaceScope: user.app_metadata?.workspace_scope, token };
   }
+  const pendingId = req => /(?:^|;\s*)colossus_mfa_pending=([^;]+)/.exec(req.headers.cookie || '')?.[1];
+  const pendingCookie = (id, seconds) => `colossus_mfa_pending=${id}; HttpOnly; SameSite=Strict; Path=/session; Max-Age=${seconds}${config.production ? '; Secure' : ''}`;
   const sessionId = req => /(?:^|;\s*)colossus_session=([^;]+)/.exec(req.headers.cookie || '')?.[1];
-  function requireConsoleAccess(identity) {
+  function requireConsoleAccess(identity, pending = false) {
+    if (config.production && identity.admin && !identity.aal2 && !pending) fail(403, 'mfa_required', 'Verify your authenticator before using the administrator account.');
     if (!['admin', 'participant'].includes(identity.role)) fail(403, 'access_denied', 'Colossus requires an active Astra admin or participant account with Colossus access approved.');
     return identity;
   }
@@ -205,7 +210,7 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
         res.writeHead(200, { 'Content-Type': `${type}; charset=utf-8` }); return res.end(content);
       }
       if (draining) fail(503, 'draining', 'Colossus is shutting down. Retry another instance.');
-      const management = url.pathname.startsWith('/v1/control') || url.pathname === '/v1/monitoring' || url.pathname === '/session' || url.pathname === '/v1/preferences';
+      const management = url.pathname.startsWith('/v1/control') || url.pathname === '/v1/monitoring' || url.pathname.startsWith('/session') || url.pathname === '/v1/preferences';
       if (management ? controlInflight >= 8 : inflight >= config.maxInflight) { res.setHeader('Retry-After', '2'); fail(429, 'capacity', 'This instance is at capacity. Retry shortly.'); }
       if (management) controlInflight++; else inflight++;
       admitted = management ? 'control' : 'inference';
@@ -249,15 +254,47 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
         try { data = await response.json(); }
         catch { fail(503, 'auth_unavailable', 'The shared sign-in service returned an invalid session.'); }
         if (!data || typeof data.access_token !== 'string' || !data.access_token || /\s/.test(data.access_token) || data.access_token.length > 16000) fail(503, 'auth_unavailable', 'The shared sign-in service returned an invalid session.');
-        const identity = requireConsoleAccess(await userFor(data.access_token)), previous = sessionId(req);
+        const identity = requireConsoleAccess(await userFor(data.access_token), true), previous = sessionId(req);
+        if (config.production && identity.admin && !identity.aal2) {
+          if (!identity.totpFactor) fail(403, 'mfa_enrollment_required', 'Set up and verify an authenticator in Workspace account settings before using administrator access.');
+          if (previous) await sessions.revoke(previous);
+          await sessions.revoke(pendingId(req));
+          const pending = await sessions.create(data.access_token, Math.min(data.expires_in ?? 300, 300));
+          res.setHeader('Set-Cookie', [cookie('', 0), pendingCookie(pending.id, pending.seconds)]);
+          return json(res, { mfaRequired: true });
+        }
         if (previous) await sessions.revoke(previous);
         const session = await sessions.create(data.access_token, data.expires_in ?? 3600);
         res.setHeader('Set-Cookie', cookie(session.id, session.seconds));
         return json(res, { signedIn: true, ...profile({ ...identity, expiresAt: session.expiresAt }) });
       }
+      if (method === 'POST' && url.pathname === '/session/mfa') {
+        operation = 'admin_mfa'; checkOrigin(req);
+        if (!(req.headers['content-type'] || '').startsWith('application/json')) fail(415,'content_type','Use application/json.');
+        const input = await boundedJson(req, 1024);
+        if (typeof input?.code !== 'string' || !/^\d{6}$/.test(input.code)) fail(400,'invalid_code','Enter the six-digit authenticator code.');
+        const pending = await sessions.get(pendingId(req));
+        const identity = requireConsoleAccess(await userFor(pending.token), true);
+        if (!identity.admin || !identity.totpFactor) fail(403,'mfa_required','A verified administrator authenticator is required.');
+        const call = async (action, body) => {
+          let response;
+          try { response = await fetcher(`${config.supabaseUrl}/auth/v1/factors/${identity.totpFactor}/${action}`,{method:'POST',redirect:'error',headers:{apikey:config.anonKey,Authorization:`Bearer ${pending.token}`,'Content-Type':'application/json'},body:JSON.stringify(body),signal:controller.signal}); }
+          catch { fail(503,'auth_unavailable','Authenticator verification is temporarily unavailable.'); }
+          if (!response.ok) fail(response.status === 429 ? 429 : 400,'invalid_code','Authenticator verification failed. Check the code and try again.');
+          return response.json();
+        };
+        const challenge = await call('challenge',{}), verified = await call('verify',{challenge_id:challenge.id,code:input.code});
+        if (typeof verified.access_token !== 'string') fail(503,'auth_unavailable','Verification returned no session. Sign in again.');
+        const upgraded = requireConsoleAccess(await userFor(verified.access_token));
+        if (upgraded.id !== identity.id || !upgraded.aal2) fail(403,'mfa_required','Authenticator verification could not be confirmed.');
+        await sessions.revoke(pendingId(req));
+        const session = await sessions.create(verified.access_token, verified.expires_in ?? 3600);
+        res.setHeader('Set-Cookie',[cookie(session.id,session.seconds),pendingCookie('',0)]);
+        return json(res,{signedIn:true,...profile({...upgraded,expiresAt:session.expiresAt})});
+      }
       if (method === 'DELETE' && url.pathname === '/session') {
-        operation = 'sign_out'; checkOrigin(req); await sessions.revoke(sessionId(req));
-        res.setHeader('Set-Cookie', cookie('', 0)); return json(res, { signedOut: true });
+        operation = 'sign_out'; checkOrigin(req); await sessions.revoke(sessionId(req)); await sessions.revoke(pendingId(req));
+        res.setHeader('Set-Cookie', [cookie('', 0), pendingCookie('',0)]); return json(res, { signedOut: true });
       }
       if (url.pathname === '/v1/monitoring') {
         operation = 'monitoring'; requireConsoleAdmin(await browserIdentity(req));

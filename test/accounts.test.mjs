@@ -9,22 +9,26 @@ const settings = { COLOSSUS_REQUIRE_GROUPS: 'false', ASTRA_PROVIDER_CONFIG_JSON:
 const adminId = '11111111-1111-1111-1111-111111111111', otherId = '22222222-2222-2222-2222-222222222222';
 async function start(t, extra = {}) {
   const user = { id: adminId, email: 'admin@example.com', app_metadata: { role: 'admin' }, user_metadata: { name: 'Test admin' } };
-  const state = { user, authStatus: 200, tokenStatus: 200, rpcStatus: 200, calls: [], password: 'synthetic-password' };
+  const state = { user, authStatus: 200, tokenStatus: 200, rpcStatus: 200, calls: [], password: 'synthetic-password', token:'synthetic-account-token', verifiedToken:'unused', code:'123456' };
   const cloudFetch = cloud(new Map());
   const fetcher = async (url, options = {}) => {
     state.calls.push({ url, options });
     if (url.includes('/auth/v1/token')) {
       const input = JSON.parse(options.body); assert.equal(input.email, 'admin@example.com');
       if (input.password !== state.password) return Response.json({ message: state.password }, { status: 400 });
-      return Response.json({ access_token: 'synthetic-account-token', expires_in: 3600 }, { status: state.tokenStatus });
+      return Response.json({ access_token: state.token, expires_in: 3600 }, { status: state.tokenStatus });
     }
     if (url.endsWith('/auth/v1/user')) {
-      assert.equal(options.headers.Authorization, 'Bearer synthetic-account-token');
+      assert(['Bearer '+state.token,'Bearer '+state.verifiedToken].includes(options.headers.Authorization));
       if (options.method === 'PUT') {
         const data = JSON.parse(options.body); assert.deepEqual(Object.keys(data), ['data']); assert.deepEqual(Object.keys(data.data), ['astra_display_preferences']);
         state.user.user_metadata = { ...state.user.user_metadata, ...data.data };
       }
       return Response.json(state.user, { status: state.authStatus });
+    }
+    if (url.includes('/auth/v1/factors/')) {
+      if (url.endsWith('/challenge')) return Response.json({id:'synthetic-challenge'});
+      return Response.json({access_token:state.verifiedToken,expires_in:3600},{status:JSON.parse(options.body).code===state.code?200:400});
     }
     if (url.includes('/rest/v1/rpc/')) {
       assert.equal(options.headers.Authorization, 'Bearer synthetic-account-token');
@@ -239,9 +243,11 @@ test('shared auth failures fail closed without exposing credentials or granting 
 test('production cookies are secure and sign-in fails without shared storage', async t => {
   const httpsOrigin = origin.replace('http:', 'https:');
   const app = await start(t, { NODE_ENV: 'production', COLOSSUS_SESSION_SECRET: 'synthetic-dedicated-session-secret-32-characters', COLOSSUS_ORIGIN: httpsOrigin, COLOSSUS_SESSION_BUCKET: 'test-bucket' });
+  app.state.user.app_metadata.role='participant';
   const response = await app.call('/session', undefined, 'POST', { email: 'admin@example.com', password: app.state.password }, { Origin: httpsOrigin });
   assert.equal(response.status, 200); assert.match(response.headers.get('set-cookie'), /; Secure$/);
   const unavailable = await start(t, { NODE_ENV: 'production', COLOSSUS_SESSION_SECRET: 'synthetic-dedicated-session-secret-32-characters', COLOSSUS_ORIGIN: httpsOrigin });
+  unavailable.state.user.app_metadata.role='participant';
   const rejected = await unavailable.call('/session', undefined, 'POST', { email: 'admin@example.com', password: unavailable.state.password }, { Origin: httpsOrigin });
   assert.equal(rejected.status, 503); assert(!rejected.headers.has('set-cookie'));
 });
@@ -276,4 +282,23 @@ test('encrypted shared sessions work across instances and revoke replay; tamperi
   second.fetch = async () => { throw Error('private-upstream-detail'); };
   await assert.rejects(second.get(tampered.id), { status: 503 });
   await assert.rejects(second.revoke(tampered.id), { status: 503 });
+});
+
+
+test('production admin login remains pending until verified TOTP and rejects pending-cookie substitution and replay',async t=>{
+ const origin='https://colossus.astra-via.com';
+ const app=await start(t,{NODE_ENV:'production',COLOSSUS_SESSION_SECRET:'synthetic-dedicated-session-secret-32-characters',COLOSSUS_ORIGIN:origin,COLOSSUS_SESSION_BUCKET:'test-bucket'});
+ const jwt=aal=>'synthetic.'+Buffer.from(JSON.stringify({aal})).toString('base64url')+'.signature';
+ app.state.token=jwt('aal1');app.state.verifiedToken=jwt('aal2');app.state.user.factors=[{id:'33333333-3333-3333-3333-333333333333',status:'verified',factor_type:'totp'}];
+ const post=body=>app.call('/session',undefined,'POST',body,{Origin:origin});
+ let response=await post({email:'admin@example.com',password:app.state.password});assert.equal(response.status,200);assert.equal((await response.json()).mfaRequired,true);
+ const pending=response.headers.getSetCookie().find(value=>value.startsWith('colossus_mfa_pending=')).split(';')[0];assert.match(pending,/=[a-f0-9]{64}$/);
+ assert.equal((await app.call('/session',pending)).status,401);
+ assert.equal((await app.call('/session',pending.replace('colossus_mfa_pending','colossus_session'))).status,403);
+ response=await app.call('/session/mfa',pending,'POST',{code:'000000'},{Origin:origin});assert.equal(response.status,400);
+ response=await app.call('/session/mfa',pending,'POST',{code:'123456'},{Origin:origin});assert.equal(response.status,200);
+ const active=response.headers.getSetCookie().find(value=>value.startsWith('colossus_session=')).split(';')[0];assert.equal((await app.call('/session',active)).status,200);
+ assert.equal((await app.call('/session/mfa',pending,'POST',{code:'123456'},{Origin:origin})).status,401);
+ app.state.authStatus=401;assert.equal((await app.call('/session',active)).status,401);
+ app.state.authStatus=200;app.state.user.factors=[];response=await post({email:'admin@example.com',password:app.state.password});assert.equal(response.status,403);assert.equal((await response.json()).error.code,'mfa_enrollment_required');
 });
