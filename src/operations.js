@@ -23,7 +23,7 @@
   const providerName = id => catalog?.providers.find(provider => provider.id === id)?.name || id;
   const systemName = id => catalog?.systems.find(system => system.id === id)?.name || id || 'Shared account';
   const keyEnabled = key => key.enabled && Date.parse(key.expiresAt) > Date.now();
-  function providerMark(provider) { const kind = provider.kind === 'compatible' && provider.baseUrl?.includes('deepseek.com') ? 'deepseek' : provider.kind; return node('span', 'provider-mark ' + kind + '-mark', kind === 'gpu' ? '⌘' : provider.name.slice(0, 1).toUpperCase()); }
+  function providerMark(provider) { const kind = provider.kind; return node('span', 'provider-mark ' + kind + '-mark', kind === 'gpu' ? '⌘' : provider.name.slice(0, 1).toUpperCase()); }
   function showView(view, updateHash = true) {
     if (!Object.hasOwn(titles, view)) view = 'overview';
     if (consoleRole !== 'admin' && !['engines', 'access', 'guide'].includes(view)) view = 'engines';
@@ -250,7 +250,7 @@
     for (const [value, label] of choices) { const wrapper = node('label', 'checkbox-row'), input = node('input'); input.type = 'checkbox'; input.name = name; input.value = value; input.checked = selected.includes(value); wrapper.append(input, document.createTextNode(label)); grid.append(wrapper); }
     fieldset.append(grid); byId('ops-editor-fields').append(fieldset);
   }
-  const presets = { openai: ['OpenAI', 'https://api.openai.com/v1'], anthropic: ['Anthropic', 'https://api.anthropic.com/v1'], deepseek: ['DeepSeek', 'https://api.deepseek.com'], gpu: ['GPU model endpoint', 'https://your-serving-endpoint.example/v1'], compatible: ['Compatible provider', 'https://your-provider.example/v1'] };
+  const presets = { openai: ['OpenAI', 'https://api.openai.com/v1'], anthropic: ['Anthropic', 'https://api.anthropic.com/v1'], gpu: ['GPU model endpoint', 'https://your-serving-endpoint.example/v1'], compatible: ['Compatible provider', 'https://your-provider.example/v1'] };
   function openEditor(collection, record, preset) {
     if (!catalog || !verified) { notice('Wait for the operations registry to load.', true); return; }
     editor?.groupForm?.dispose();

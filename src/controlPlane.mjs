@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID, createCipheriv, createDecipheriv } from 'node:crypto';
-import { runtimeVertexRoute } from './vertex.mjs';
+import { runtimeVertexRoute, requireApprovedProvider } from './vertex.mjs';
 import { ControlStore } from './controlStore.mjs';
 import { endpointUrl } from './endpoints.mjs';
 import { fail, resolveRoute, validateChat } from './config.mjs';
@@ -109,6 +109,7 @@ export class ControlPlane {
       const kind = body.kind ?? previous?.kind;
       if (!['openai', 'anthropic', 'deepseek', 'compatible', 'gpu'].includes(kind)) fail(400, 'invalid_provider', 'Choose a supported provider type.');
       const baseUrl = endpointUrl(body.baseUrl ?? previous?.baseUrl).href.replace(/\/$/, '');
+      if (base.enabled) requireApprovedProvider(this.config, {baseUrl});
       if (previous?.envAlias && baseUrl !== previous.baseUrl && !body.apiKey) fail(400, 'credential_binding', 'A managed credential cannot be sent to a different endpoint. Supply a separate key for a new endpoint.');
       value = { ...base, kind, protocol: kind === 'anthropic' ? 'anthropic' : 'openai', baseUrl,
         envAlias: previous?.envAlias || null, credential: body.apiKey ? this.seal(recordId, body.apiKey) : previous?.credential || null,
@@ -119,6 +120,7 @@ export class ControlPlane {
         fail(409, 'release_immutable', 'Publish a new Lab version to change its serving definition.');
       const providerId = id(body.providerId ?? previous?.providerId), provider = (await this.store.get('providers/' + providerId)).data;
       if (!provider || provider.native) fail(400, 'provider_required', 'Choose a compatible or Anthropic connection. Native adapters use their dedicated model route.');
+      if (base.enabled) requireApprovedProvider(this.config, provider);
       const capabilities = body.capabilities ?? previous?.capabilities ?? ['text'];
       if (!Array.isArray(capabilities) || !capabilities.length || capabilities.some(item => !['text', 'image', 'audio', 'video'].includes(item)) ||
           (provider.protocol === 'anthropic' && capabilities.some(item => !['text', 'image'].includes(item)))) fail(400, 'invalid_capabilities', 'Choose capabilities supported by this provider adapter.');
@@ -436,6 +438,7 @@ export class ControlPlane {
   async checkConnection(collection, recordId, actor) {
     await this.ensure(); const path = collection + '/' + id(recordId), record = (await this.store.get(path)).data;
     if (!record || !['providers', 'integrations'].includes(collection)) fail(404, 'connection_not_found', 'Choose a registered connection.');
+    if (collection === 'providers') requireApprovedProvider(this.config, record);
     if (record.native || record.protocol === 'vertex-openai') fail(409, 'native_connection', 'Native Vertex calls use runtime identity and their own token-count preflight. No compatible model-discovery check is available.');
     if (collection === 'integrations' && !['rest', 'training'].includes(record.kind)) fail(409, 'storage_agent_required', 'Bucket connections are registered for your ingestion worker. This gateway does not ingest or copy data automatically.');
     const start = Date.now(), key = this.credential(record), headers = {};
