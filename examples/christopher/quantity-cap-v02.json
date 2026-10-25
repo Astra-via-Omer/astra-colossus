@@ -1,0 +1,23 @@
+{
+  "modelVersion": "0.2.0",
+  "stateSpace": "intervals",
+  "scope": { "entityId": "batch:synthetic-demo", "contextId": "quantity-cap:v1", "windowId": "example-only" },
+  "variables": [
+    { "id": "quantity", "unit": "count", "domain": { "min": "0", "max": "200" } }
+  ],
+  "observations": [
+    {
+      "id": "quantity_record", "variableId": "quantity", "unit": "count",
+      "scope": { "entityId": "batch:synthetic-demo", "contextId": "quantity-cap:v1", "windowId": "example-only" },
+      "interval": { "min": "103", "max": "105" },
+      "sourceId": "synthetic-measurement", "sourceGroup": "synthetic-instrument", "locator": "demo:row-1"
+    }
+  ],
+  "claims": [
+    {
+      "id": "quantity_cap", "text": "The supplied quantity is at most 100.", "kind": "linear", "unit": "count",
+      "terms": [{ "variableId": "quantity", "coefficient": "1" }],
+      "relation": "<=", "rhs": "100", "evidence": ["quantity_record"]
+    }
+  ]
+}

@@ -1,5 +1,10 @@
 # Colossus · Astra Via
 
+Christopher now includes the separately registered `christopher:0.2.0` native
+mathematical model. It checks supplied equations and measurements with exact
+bounds, witness values and evidence fingerprints. See [Christopher 0.2.0](docs/CHRISTOPHER-0.2.md).
+Dynamic claim reporting and external proof search are deferred.
+
 Colossus is Astra Via's operations console and inference gateway at **https://colossus.astra-via.com**. Administrators manage provider connections, model aliases, system access, spending and processes from one protected control panel. A dedicated Firestore database shares configuration, encrypted credentials, system-key grants, monthly spending reservations and cancellation requests across instances. Lab, Workflow, Enigma, Evidence and Observer can use the same HTTP API; registering a system does not migrate that service's backend automatically.
 
 This repository contains the standalone Colossus service. GitHub Actions checks pull requests and deploys successful pushes to `main` to the separate `astra-colossus` Cloud Run service. See [deployment details](DEPLOYMENT.md).

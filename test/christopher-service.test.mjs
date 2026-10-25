@@ -79,3 +79,44 @@ test('a Lab-only administrator role cannot grant the private Astra administrator
   const capabilities = await (await app.call('/v1/capabilities', undefined, 'lab-only-admin-token', { 'x-colossus-service-key': key.oneTimeKey })).json();
   assert.equal(capabilities.christopher, undefined);
 });
+
+test('0.2.0 is a separate native model with exact calculations and versioned CPU accounting', async t => {
+  const app = await start(t), input = { ...example(), modelVersion: '0.2.0' };
+  const manifest = await (await app.call('/v1/christopher?modelVersion=0.2.0')).json();
+  assert.equal(manifest.alias, 'christopher:0.2.0'); assert.equal(manifest.latestVersion, '0.2.0');
+  assert.deepEqual(manifest.versions.map(v => v.version), ['0.1.0', '0.2.0']);
+  assert.equal((await (await app.call('/v1/christopher/demo?modelVersion=0.2.0')).json()).modelVersion, '0.2.0');
+  const models = (await (await app.call('/v1/models')).json()).data;
+  assert(models.some(m => m.id === 'christopher:0.2.0' && m.task === 'analysis'));
+  const response = await app.call('/v1/christopher/fingerprint', input); assert.equal(response.status, 200);
+  const result = await response.json(); assert.equal(result.model.version, '0.2.0');
+  assert.equal(result.claims[0].mathematics.status, 'calculated'); assert.equal(result.runtime.upstreamRequests, 0);
+  assert.equal(result.fingerprint.version, 'scoped-mathematical-fingerprint@0.2.0');
+  const record = (await app.monitoring.records(1)).records.find(r => r.requestId === result.requestId);
+  assert.equal(record.calls[0].engine.version, '0.2.0'); assert.equal(record.calls[0].providerModel, 'christopher@0.2.0');
+  assert.equal(record.calls[0].usage.totalTokens, 0); assert.equal(record.calls[0].execution, 'local_cpu');
+  assert(!JSON.stringify(record).includes('approval-log'));
+  assert.equal((await app.call('/v1/christopher/evaluate', example())).status, 200);
+  assert.equal((await app.call('/v1/christopher/evaluate', { ...input, modelVersion: '0.3.0' })).status, 400);
+  assert.equal((await app.call('/v1/chat/completions', { model: 'christopher:0.2.0', messages: [{ role: 'user', content: 'Check this' }] })).status, 400);
+  assert.equal(app.unexpectedRequests, 0);
+});
+
+test('0.2.0 requires its own scoped grant and preserves independent version pauses', async t => {
+  const app = await start(t), input = { ...example(), modelVersion: '0.2.0' };
+  const oldKey = await app.control.issueKey({ name: 'Legacy math', systemId: 'lab', requireGroup: false, allowedModels: ['christopher'] }, actor);
+  const newKey = await app.control.issueKey({ name: 'New math', systemId: 'lab', requireGroup: false, allowedModels: ['christopher:0.2.0'] }, actor);
+  assert.equal((await app.call('/v1/christopher/evaluate', input, 'local-admin-test', { 'X-Colossus-Service-Key': oldKey.oneTimeKey })).status, 403);
+  assert.equal((await app.call('/v1/christopher/evaluate', input, 'local-admin-test', { 'X-Colossus-Service-Key': newKey.oneTimeKey })).status, 200);
+  assert.equal((await app.call('/v1/christopher/evaluate', input, 'participant-token', { 'X-Colossus-Service-Key': newKey.oneTimeKey })).status, 403);
+  await app.control.save('models', { id: 'christopher:0.2.0', enabled: false }, actor);
+  assert.equal((await app.call('/v1/christopher/evaluate', input)).status, 503);
+  assert.equal((await app.call('/v1/christopher/evaluate', example())).status, 200);
+  await app.control.save('models', { id: 'christopher:0.2.0', enabled: true }, actor);
+  await app.control.save('models', { id: 'christopher', enabled: false }, actor);
+  assert.equal((await app.call('/v1/christopher/evaluate', input)).status, 200);
+  assert.equal((await app.call('/v1/christopher/evaluate', example())).status, 503);
+  await app.control.save('providers', { id: 'managed-christopher', enabled: false }, actor);
+  assert.equal((await app.call('/v1/christopher/evaluate', input)).status, 503);
+  assert.equal(app.unexpectedRequests, 0);
+});

@@ -3,7 +3,7 @@ import { runtimeVertexRoute, requireApprovedProvider, isDeepSeek } from './verte
 import { ControlStore } from './controlStore.mjs';
 import { endpointUrl } from './endpoints.mjs';
 import { fail, resolveRoute, validateChat } from './config.mjs';
-import { CHRISTOPHER } from './christopher.mjs';
+import { CHRISTOPHER, CHRISTOPHER_MODELS, christopherModel } from './christopher.mjs';
 import { isChristopherAdmin, requireChristopherAdmin } from './christopherFingerprint.mjs';
 
 const idPattern = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,119}$/;
@@ -47,7 +47,7 @@ export class ControlPlane {
     }
     if (this.config.freeGroupId) seeds.push(['groups/' + id(this.config.freeGroupId), { id: this.config.freeGroupId, name: 'Free Workspace PDF checking', enabled: true, modelIds: ['astra-default'], memberIds: [], organizationId: null, activityModels: {}, createdAt: now(), updatedAt: now() }]);
     seeds.push(['providers/managed-christopher', { id: 'managed-christopher', name: 'astra-via mathematical runtime', kind: 'native', protocol: 'native', native: 'christopher', baseUrl: this.config.origin, enabled: true, createdAt: now(), updatedAt: now() }]);
-    seeds.push(['models/christopher', { id: 'christopher', name: CHRISTOPHER.name, providerId: 'managed-christopher', native: 'christopher', model: `christopher@${CHRISTOPHER.version}`, task: 'analysis', capabilities: ['structured'], maxTokens: 0, pricing: null, enabled: true, createdAt: now(), updatedAt: now() }]);
+    for (const model of CHRISTOPHER_MODELS) seeds.push(['models/' + model.alias, { id: model.alias, name: model.name, providerId: 'managed-christopher', native: 'christopher', model: `christopher@${model.version}`, task: 'analysis', capabilities: ['structured'], maxTokens: 0, pricing: null, enabled: true, createdAt: now(), updatedAt: now() }]);
     if (this.config.media) {
       seeds.push(['providers/managed-vertex-media', { id: 'managed-vertex-media', name: 'Google Vertex AI', kind: 'vertex', protocol: 'vertex', native: 'vertex-media', baseUrl: 'https://aiplatform.googleapis.com', credential: null, enabled: true, createdAt: now(), updatedAt: now() }]);
       seeds.push(['models/broadcast-media', { id: 'broadcast-media', name: 'Broadcast observation', providerId: 'managed-vertex-media', native: 'vertex-media', model: this.config.media.model, task: 'observation', maxTokens: 1400, capabilities: ['text', 'audio', 'image'], pricing: null, enabled: true, createdAt: now(), updatedAt: now() }]);
@@ -366,16 +366,19 @@ export class ControlPlane {
   async authorize(identity, alias) {
     if (identity.allowedModels && !identity.allowedModels.includes(alias)) fail(403, 'model_not_granted', 'This system key is not allowed to use this model route.');
   }
-  async christopherRoute(identity) {
+  async christopherRoute(identity, version = CHRISTOPHER.version) {
     requireChristopherAdmin(identity);
+    const manifest = christopherModel(version);
     const { group, organizationId } = await this.groupAccess(identity, false);
-    await this.authorize(identity, CHRISTOPHER.alias);
+    await this.authorize(identity, manifest.alias);
     if (this.enabled) {
-      const model = (await this.store.get('models/christopher')).data;
+      const model = (await this.store.get('models/' + manifest.alias)).data;
       const provider = (await this.store.get('providers/managed-christopher')).data;
       if (!model?.enabled || !provider?.enabled) fail(503, 'route_paused', 'Christopher or its mathematical runtime is paused.');
+      if (model.native !== 'christopher' || model.model !== `christopher@${manifest.version}` || model.providerId !== provider.id || provider.native !== 'christopher')
+        fail(503, 'native_configuration', 'The registered Christopher version does not match its mathematical runtime.');
     }
-    return { alias: CHRISTOPHER.alias, model: `christopher@${CHRISTOPHER.version}`, providerId: 'managed-christopher', task: 'analysis',
+    return { alias: manifest.alias, model: `christopher@${manifest.version}`, providerId: 'managed-christopher', task: 'analysis',
       pricing: { inputPerMillion: 0, cachedInputPerMillion: 0, outputPerMillion: 0 }, maxTokens: 0,
       routing: { groupId: group?.id || null, organizationId, activity: identity.activity || '' } };
   }
