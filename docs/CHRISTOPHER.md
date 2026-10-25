@@ -1,5 +1,10 @@
 # Christopher reality gap model
 
+[Christopher 0.2.0](CHRISTOPHER-0.2.md) adds a separately versioned native model
+with explicit mathematical definitions, exact extremal witnesses and canonical
+structure/evidence fingerprints. The 0.1.0 contract described below remains
+available. Dynamic claim reporting and external proof search are later phases.
+
 Christopher 0.1.0 is a native mathematical model running inside the Colossus
 Node service. It takes structured measurements and claims, and computes
 conditional gap bounds. The current release is a private administrator-only

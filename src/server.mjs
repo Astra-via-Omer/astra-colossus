@@ -16,7 +16,7 @@ import { providerRequest, providerResult, AnthropicStream, providerRejectionInfo
 import { MediaObserver, mediaCostUsd } from './media.mjs';
 import { accountDisplay, DisplayError } from './account-display.mjs';
 import { validDisplayPreferences } from './display-contract.mjs';
-import { CHRISTOPHER, evaluateChristopher } from './christopher.mjs';
+import { CHRISTOPHER, CHRISTOPHER_V2, CHRISTOPHER_MODELS, christopherModel, evaluateChristopher } from './christopher.mjs';
 import { fingerprint, requireChristopherAdmin, isChristopherAdmin } from './christopherFingerprint.mjs';
 import { ChristopherLearning } from './christopherLearning.mjs';
 import { demoInput, demoExamples } from './christopherFixtures.mjs';
@@ -356,7 +356,7 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
         operation = 'capabilities'; return json(res, { service: 'colossus', admin: identity.admin,
           engineCreation: hasRegistry(),
           streaming: 'sse', realtimeSession: false,
-          ...(isChristopherAdmin(identity) ? { christopher: CHRISTOPHER } : {}),
+          ...(isChristopherAdmin(identity) ? { christopher: { ...CHRISTOPHER, latestVersion: CHRISTOPHER_V2.version, versions: CHRISTOPHER_MODELS } } : {}),
           routes: await control.routes(identity),
           observer: { status: config.media ? 'ready' : 'unconfigured', engine: 'broadcast-observation@1.0.0', model: config.media?.model, input: 'PCM16 16 kHz mono WAV and timestamped JPEG frames', maxSampleMs: 4000, verification: 'Observation and claim detection only; no truth score.' } });
       }
@@ -365,8 +365,16 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
       if (url.pathname.startsWith('/v1/christopher')) requireChristopherAdmin(identity);
       if (method === 'GET' && url.pathname === '/v1/christopher/workspace/reviews') { operation = 'christopher_workspace_list'; return json(res, await christopherWorkspace.list(identity, url.searchParams.get('cursor'), controller.signal)); }
       if (method === 'GET' && /^\/v1\/christopher\/workspace\/reviews\/[A-Za-z0-9_-]{1,120}$/.test(url.pathname)) { operation = 'christopher_workspace_inspect'; return json(res, await christopherWorkspace.review(identity, url.pathname.split('/').at(-1), controller.signal)); }
-      if (method === 'GET' && url.pathname === '/v1/christopher') { operation = 'christopher_manifest'; return json(res, CHRISTOPHER); }
-      if (method === 'GET' && url.pathname === '/v1/christopher/demo') return json(res, demoInput(url.searchParams.get('scenario') || 'uncertain'));
+      if (method === 'GET' && url.pathname === '/v1/christopher') {
+        operation = 'christopher_manifest'; const manifest = christopherModel(url.searchParams.get('modelVersion') || CHRISTOPHER.version);
+        await productAccess.authorize(identity, manifest.alias);
+        return json(res, { ...manifest, latestVersion: CHRISTOPHER_V2.version, versions: CHRISTOPHER_MODELS.map(m => ({ version: m.version, alias: m.alias, name: m.name })) });
+      }
+      if (method === 'GET' && url.pathname === '/v1/christopher/demo') {
+        const manifest = christopherModel(url.searchParams.get('modelVersion') || CHRISTOPHER.version);
+        await productAccess.authorize(identity, manifest.alias);
+        return json(res, { ...demoInput(url.searchParams.get('scenario') || 'uncertain'), modelVersion: manifest.version });
+      }
       if (url.pathname.startsWith('/v1/christopher/experiments')) {
         operation = 'christopher_experiment'; await control.ensure();
         const organizationId = identity.kind === 'account' ? await control.store.organizationFor(identity.id) : null;
@@ -417,10 +425,14 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
         }
       }
       if (['/v1/christopher/evaluate', '/v1/christopher/fingerprint'].includes(url.pathname)) {
-        const route = await control.christopherRoute(identity);
+        // Missing versions still enter legacy admission accounting before the
+        // evaluator rejects them, preserving existing rate-limit behavior.
+        const manifest = christopherModel(body.modelVersion ?? CHRISTOPHER.version);
+        await productAccess.authorize(identity, manifest.alias);
+        const route = await control.christopherRoute(identity, manifest.version);
         Object.assign(process, route.routing);
         const reservation = await control.reserve(identity, route, {}, requestId, 1, 0);
-        const call = monitoring.call(process, route, CHRISTOPHER);
+        const call = monitoring.call(process, route, manifest);
         call.execution = 'local_cpu'; call.reservation = reservation; call.providerId = route.providerId;
         try {
           const result = await (url.pathname.endsWith('/fingerprint') ? fingerprint : evaluateChristopher)(body, { signal: controller.signal });

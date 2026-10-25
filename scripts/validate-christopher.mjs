@@ -4,11 +4,12 @@ import { performance } from 'node:perf_hooks';
 import { randomBytes } from 'node:crypto';
 import { createService } from '../src/server.mjs';
 import { configuration } from '../src/config.mjs';
-import { evaluateChristopher } from '../src/christopher.mjs';
+import { CHRISTOPHER_V2, christopherModel, evaluateChristopher } from '../src/christopher.mjs';
 import { savedWorkspaceFixture } from '../test/fixtures/workspace-review.mjs';
 
 const root = new URL('../', import.meta.url);
-const input = JSON.parse(await readFile(new URL('examples/christopher/r42.json', root), 'utf8'));
+const model = christopherModel(process.argv.find(arg => arg.startsWith('--model-version='))?.split('=')[1] || CHRISTOPHER_V2.version);
+const input = { ...JSON.parse(await readFile(new URL('examples/christopher/r42.json', root), 'utf8')), modelVersion: model.version };
 let providerRequests = 0;
 const servingDemo = process.argv.includes('--serve');
 const administratorToken = servingDemo ? 'christopher-local-demo' : randomBytes(32).toString('hex');
@@ -28,7 +29,7 @@ const app = createService(configuration({ ASTRA_PROVIDER_CONFIG_JSON: '{"key":"u
 await new Promise((resolve, reject) => { app.server.once('error', reject); app.server.listen(process.argv.includes('--serve') ? Number(process.env.PORT || 4014) : 0, '127.0.0.1', resolve); });
 const baseUrl = 'http://127.0.0.1:' + app.server.address().port;
 if (process.argv.includes('--serve')) {
-  console.log(JSON.stringify({ service: 'colossus', model: 'christopher@0.1.0', url: baseUrl, manifest: baseUrl + '/v1/christopher', execution: 'local_cpu', authentication: 'Use the documented local demo bearer token.', externalProviders: 'disabled' }));
+  console.log(JSON.stringify({ service: 'colossus', model: `christopher@${model.version}`, url: baseUrl, manifest: baseUrl + '/v1/christopher?modelVersion=' + model.version, execution: 'local_cpu', authentication: 'Use the documented local demo bearer token.', externalProviders: 'disabled' }));
   process.on('SIGTERM', () => app.server.close()); process.on('SIGINT', () => app.server.close());
 } else {
   try {
@@ -54,7 +55,7 @@ if (process.argv.includes('--serve')) {
       }));
       load.push({ concurrentRequests: concurrency, elapsedMs: performance.now() - started, completed: responses.filter(r => r.status === 200).length, capacityLimited: responses.filter(r => r.errorCode === 'capacity').length, rateLimited: responses.filter(r => r.errorCode === 'system_rate_limit').length, otherFailures: responses.filter(r => ![200, 429].includes(r.status)).length, latency: stats(responses.map(r => r.durationMs)) });
     }
-    const result = { model: 'christopher@0.1.0', generatedAt: new Date().toISOString(), nodeVersion: process.version,
+    const result = { model: `christopher@${model.version}`, generatedAt: new Date().toISOString(), nodeVersion: process.version,
       tests: { passed: Number(/# pass (\d+)/.exec(testOutput)?.[1]), failed: Number(/# fail (\d+)/.exec(testOutput)?.[1]), independentFractionOracleCases: oracle.length },
       directCalculation: stats(samples), localColossusHttp: stats(httpSamples), boundedLocalLoad: load, providerRequests,
       providerCostUsd: 0, cloudInfrastructureCost: 'not measured; no cloud resources were provisioned',

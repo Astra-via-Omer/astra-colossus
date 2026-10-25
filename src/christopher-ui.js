@@ -13,10 +13,10 @@ async function api(path, body, method) {
 function notice(text, error = false) { $('notice').textContent = text; $('notice').classList.toggle('error', error); }
 async function act(work) {
   if (busy) return; busy = true;
-  const controls = [...document.querySelectorAll('.chr-source-bar button,.chr-source-bar select,.chr-lab button')]; controls.forEach(n => { n.disabled = true; });
+  const controls = [...document.querySelectorAll('.chr-source-bar button,.chr-source-bar select,.chr-lab button,.chr-lab select')]; controls.forEach(n => { n.disabled = true; });
   try { await work(); } catch (error) { notice(error.message, true); } finally { busy = false; controls.forEach(n => { n.disabled = false; }); }
 }
-function clear() { current = undefined; selected = undefined; scene.data = undefined; scene.graph = undefined; scene.features = []; scene.positions?.clear(); $('gravity').replaceChildren(); $('claims').replaceChildren(); $('detail').hidden = true; $('reality-report').hidden = true; $('empty').hidden = false; $('raw').textContent = ''; $('claim-total').textContent = '0'; $('map-count').textContent = '0 CLAIMS'; $('counts').textContent = 'No review selected'; $('document-name').textContent = 'Your own saved Workspace reviews'; $('selected-title').textContent = ''; for (const id of ['comparison', 'evidence', 'math', 'quantities', 'next-check', 'gap-summary', 'original-report', 'claim-gap']) $(id).replaceChildren(); }
+function clear() { current = undefined; selected = undefined; scene.data = undefined; scene.graph = undefined; scene.features = []; scene.positions?.clear(); $('gravity').replaceChildren(); $('claims').replaceChildren(); $('detail').hidden = true; $('reality-report').hidden = true; $('empty').hidden = false; $('raw').textContent = ''; $('claim-total').textContent = '0'; $('map-count').textContent = '0 CLAIMS'; $('counts').textContent = 'No review selected'; $('document-name').textContent = 'Your own saved Workspace reviews'; $('selected-title').textContent = ''; for (const id of ['comparison', 'calculation', 'evidence', 'math', 'quantities', 'next-check', 'gap-summary', 'original-report', 'claim-gap']) $(id).replaceChildren(); }
 function visibleFeatures() {
   if (!current) return [];
   const search = $('search').value.trim().toLowerCase(), filter = $('filter').value, links = claimGraph(current).links;
@@ -116,12 +116,28 @@ function renderClaimGap(feature) {
   if (model) pattern.append(node('p', 'chr-report-note', `Reference ${model.id} · ${model.version} · ${model.dataClasses.join(', ')} data · ${model.trainingExamples} training / ${model.heldOutExamples} held-out cases. Expires ${new Date(model.expiresAt).toLocaleString()}.`));
   pattern.append(node('p', 'chr-report-note', 'A learned pattern does not replace the stated rule or independent evidence.')); grid.append(pattern); target.append(grid);
 }
+function renderCalculation(feature) {
+  const target = $('calculation'); target.replaceChildren(); if (!feature.mathematics) return;
+  const calculation = feature.mathematics;
+  target.append(node('h3', '', `Christopher ${current.model.version} · Mathematical calculation`), node('p', 'chr-equation', requiredRelation({ expected: calculation.definition })));
+  if (!feature.gap) { target.append(node('p', '', formalExplanation(feature))); return; }
+  target.append(node('p', '', `Violation rule: ${calculation.violationRule}.`), node('p', '', calculation.method === 'exhaustive_finite_evaluation' ? `All ${calculation.checkedWorlds} compatible supplied worlds were checked.` : 'Affine extrema calculated over the intersection of the measurement intervals.'));
+  const details = node('details'); details.append(node('summary', '', 'Values that establish the lower and upper bounds'));
+  const exact = value => value.denominator === '1' ? value.numerator : `${value.numerator}/${value.denominator}`;
+  for (const [bound, witness] of Object.entries(calculation.witnesses)) {
+    const section = node('div', 'chr-witness'); section.append(node('h4', '', `${bound === 'lower' ? 'Lower' : 'Upper'} gap: ${exact(witness.violation)} ${feature.gap.unit}${witness.worldId ? ' · world ' + witness.worldId : ''}`));
+    const values = node('dl'); for (const [id, value] of Object.entries(witness.values)) values.append(node('dt', '', id), node('dd', '', exact(value)));
+    section.append(values); if (witness.residual) section.append(node('p', '', `Signed residual: ${exact(witness.residual)} ${feature.gap.unit}.`)); details.append(section);
+  }
+  target.append(details, node('p', 'chr-source-meta', 'Exact fractions demonstrate the calculation under supplied assumptions. Source authenticity and finite-world completeness require independent checks.'));
+}
 function renderDetail(feature) {
   const documentClaim = feature.kind === 'document_claim';
   $('selected-title').textContent = feature.text; $('selected-label').textContent = `CLAIM ${feature.number || current.fingerprint.features.indexOf(feature) + 1} / ${documentClaim ? 'SOURCE ASSERTION' : 'STRUCTURED RELATION'}`;
   $('selected-state').textContent = states[feature.status] || feature.status; $('selected-state').className = 'chr-state ' + feature.status;
   $('gap').textContent = feature.gap ? `Gap [${feature.gap.lower}, ${feature.gap.upper}] ${feature.gap.unit}` : 'Numerical gap not established';
   renderClaimGap(feature);
+  renderCalculation(feature);
   const comparison = $('comparison'); comparison.replaceChildren();
   if (feature.observed) { comparison.append(node('p', '', `Expected: signed residual ${feature.observed.satisfies}.`), numericPlot(feature), node('p', '', `Observed: [${feature.observed.min}, ${feature.observed.max}] ${feature.observed.unit}.`)); }
   const checks = feature.checks || [
@@ -151,7 +167,9 @@ function render(data) {
   const real = data.dataClass === 'real_workspace_review'; $('data-class').textContent = real ? 'YOUR WORKSPACE PDF' : data.mode === 'workspace_inspection' ? 'LOCAL WORKSPACE FIXTURE' : data.dataClass === 'structured_input' ? 'CALLER-SUPPLIED MEASUREMENTS' : 'SYNTHETIC EXAMPLE'; $('data-class').classList.toggle('synthetic', !real);
   $('document-name').textContent = data.review?.name || data.scope.entityId;
   $('map-summary').textContent = `${data.fingerprint.features.length} claims · ${data.review?.sourceCount || claimGraph(data).groups.length} source contexts · select any claim.`;
-  $('inspection-note').textContent = real ? 'Read live · no copy retained · training off' : 'Clearly labelled test data · no paid model call'; renderList();
+  const workspaceInspection = data.mode === 'workspace_inspection';
+  if (!workspaceInspection && (data.model?.version === '0.1.0' || data.model?.version === '0.2.0')) $('model-version').value = data.model.version;
+  $('inspection-note').textContent = data.dataClass === 'structured_input' ? `Christopher ${data.model.version} · supplied measurements · exact calculation` : real ? 'Read live · no copy retained · training off' : workspaceInspection ? 'Synthetic saved review · source assertions · no paid model call' : `Christopher ${data.model.version} · synthetic test data · no paid model call`; renderList();
 }
 async function loadReview(id, quiet = false) {
   const version = ++epoch; if (!quiet) { clear(); notice('Reading your saved claims and evidence from Workspace…'); }
@@ -167,7 +185,7 @@ async function loadReviews(more = false) {
   const id = /^[A-Za-z0-9_-]{1,120}$/.test(previous || '') ? previous : reviews.find(r => r.status === 'completed')?.id;
   if (id) { $('review').value = id; await loadReview(id); } else { clear(); notice('No completed saved review yet. Upload a PDF and finish its normal Workspace review, then refresh here.'); }
 }
-async function demo() { const input = await api('/v1/christopher/demo?scenario=' + encodeURIComponent($('scenario').value)); $('input').value = JSON.stringify(input, null, 2); render(await api('/v1/christopher/fingerprint', input)); notice('Synthetic scenario. These observations are examples, not your PDF data.'); }
+async function demo() { clear(); const input = await api('/v1/christopher/demo?scenario=' + encodeURIComponent($('scenario').value) + '&modelVersion=' + encodeURIComponent($('model-version').value)); $('input').value = JSON.stringify(input, null, 2); render(await api('/v1/christopher/fingerprint', input)); notice(`Christopher ${input.modelVersion} calculated this synthetic scenario. Select a claim to inspect its mathematical check and evidence.`); }
 async function switchMode(next) { epoch++; mode = next; clear(); $('live-mode').setAttribute('aria-pressed', String(mode === 'workspace')); $('demo-mode').setAttribute('aria-pressed', String(mode === 'demo')); $('review-controls').hidden = mode !== 'workspace'; $('demo-controls').hidden = mode !== 'demo'; if (mode === 'workspace') await loadReviews(); else await demo(); }
 function showCandidate(model) {
   candidate = model; const target = $('candidate'); target.replaceChildren(); const metrics = node('div', 'chr-candidate-metrics');
@@ -183,9 +201,10 @@ async function dataset() {
 }
 $('live-mode').addEventListener('click', () => act(() => switchMode('workspace'))); $('demo-mode').addEventListener('click', () => act(() => switchMode('demo')));
 $('refresh').addEventListener('click', () => act(() => loadReviews())); $('more').addEventListener('click', () => act(() => loadReviews(true))); $('review').addEventListener('change', () => act(() => $('review').value ? loadReview($('review').value) : clear())); $('scenario').addEventListener('change', () => act(demo));
+$('model-version').addEventListener('change', () => act(async () => { const input = JSON.parse($('input').value); input.modelVersion = $('model-version').value; $('input').value = JSON.stringify(input, null, 2); clear(); render({ ...await api('/v1/christopher/fingerprint', input), dataClass: 'structured_input' }); notice(`Mathematical check completed with Christopher ${input.modelVersion}.`); }));
 for (const id of ['search', 'filter']) $(id).addEventListener(id === 'search' ? 'input' : 'change', () => { if (current) renderList(); });
 $('flat').addEventListener('click', () => { const flat = $('flat').getAttribute('aria-pressed') !== 'true'; $('flat').setAttribute('aria-pressed', String(flat)); $('flat').textContent = flat ? '3D view' : '2D view'; scene.mode(flat); }); $('focus').addEventListener('click', () => scene.focus()); $('reset').addEventListener('click', () => scene.reset()); $('zoom-in').addEventListener('click', () => scene.scale(.15)); $('zoom-out').addEventListener('click', () => scene.scale(-.15));
-$('compare').addEventListener('click', () => act(async () => { const input = JSON.parse($('input').value); epoch++; mode = 'demo'; $('live-mode').setAttribute('aria-pressed', 'false'); $('demo-mode').setAttribute('aria-pressed', 'true'); $('review-controls').hidden = true; $('demo-controls').hidden = false; render({ ...await api('/v1/christopher/fingerprint', input), dataClass: 'structured_input' }); notice('Structured mathematical comparison. Measurements are supplied by the caller.'); }));
+$('compare').addEventListener('click', () => act(async () => { const input = JSON.parse($('input').value); epoch++; mode = 'demo'; clear(); $('live-mode').setAttribute('aria-pressed', 'false'); $('demo-mode').setAttribute('aria-pressed', 'true'); $('review-controls').hidden = true; $('demo-controls').hidden = false; render({ ...await api('/v1/christopher/fingerprint', input), dataClass: 'structured_input' }); notice(`Christopher ${input.modelVersion} mathematical check completed. Measurements are supplied by the caller.`); }));
 $('seed').addEventListener('click', () => act(async () => { notice('Fitting a synthetic numerical reference…'); showCandidate(await api('/v1/christopher/experiments/demo', {})); await dataset(); notice('Synthetic reference trained; PDF data was not added to training.'); })); $('train').addEventListener('click', () => act(async () => { showCandidate(await api('/v1/christopher/experiments/train', {})); await dataset(); }));
 const narrowNavigation = matchMedia('(max-width:1050px)');
 function syncNavigation() { const hidden = narrowNavigation.matches && !document.body.classList.contains('chr-nav-open'); const sidebar = document.querySelector('.ops-sidebar'); sidebar.inert = hidden; sidebar.setAttribute('aria-hidden', String(hidden)); }

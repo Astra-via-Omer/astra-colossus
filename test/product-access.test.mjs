@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { configuration } from '../src/config.mjs';
 import { createService } from '../src/server.mjs';
+import { example } from './fixtures/christopher-input.mjs';
 
 const origin = 'http://localhost:4019', adminId = '11111111-1111-1111-1111-111111111111', userId = '22222222-2222-2222-2222-222222222222';
 const actor = { kind: 'account', id: adminId, admin: true, astraAdmin: true, email: 'operator@example.invalid' };
@@ -109,6 +110,19 @@ test('administrator status does not bypass membership, model grants or separate 
   await app.grant(adminId, 'colossus', { status: 'revoked' });
   assert.equal((await app.request('/v1/models')).status, 403);
   assert.equal((await app.request('/v1/control/product-access')).status, 200);
+});
+
+test('Christopher 0.2.0 also checks the selected version grant under enforced product licensing', async t => {
+  const app = await setup(t); await app.productAccess.activate({ enabled: true }, actor);
+  const input = { ...example(), modelVersion: '0.2.0' };
+  assert.equal((await app.request('/v1/christopher/evaluate', input)).status, 403);
+  assert.equal((await app.request('/v1/christopher?modelVersion=0.2.0')).status, 403);
+  assert.equal((await app.request('/v1/christopher/evaluate', example())).status, 200);
+  await app.control.save('groups', { id: 'approved', modelIds: ['astra-default', 'christopher', 'christopher:0.2.0'] }, actor);
+  assert.equal((await app.request('/v1/christopher/evaluate', input)).status, 200);
+  await app.grant(adminId, 'colossus', { status: 'revoked' });
+  assert.equal((await app.request('/v1/christopher/evaluate', input)).status, 403);
+  assert.equal(app.calls.length, 0);
 });
 
 test('unknown products and implicit free-PDF membership are denied; policy/store failures fail closed', async t => {

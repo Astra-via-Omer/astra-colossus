@@ -6,6 +6,17 @@ export const CHRISTOPHER = Object.freeze({ id: 'christopher', version: '0.1.0', 
   stateSpaces: ['intervals', 'finite'], relations: ['<=', '>=', '=='], compositions: 'all/any in finite mode',
   limits: { variables: 32, observations: 128, claims: 128, worlds: 2048, termEvaluations: 250000 },
   limitation: 'Conditional mathematical bounds over the declared state space. Measurements, scopes, completeness and world coverage require independent validation. No trained language model or quantum advantage is claimed.' });
+export const CHRISTOPHER_V2 = Object.freeze({ ...CHRISTOPHER, version: '0.2.0', alias: 'christopher:0.2.0', name: 'Christopher mathematical checks 0.2.0',
+  arithmetic: 'exact rational arithmetic', output: 'equations, conditional gap bounds, extremal witnesses and evidence paths',
+  fingerprintVersion: 'scoped-mathematical-fingerprint@0.2.0',
+  deferred: ['dynamic claim reporting', 'external proof search'],
+  limitation: 'Exact mathematical checks under supplied measurements, scope and state-space assumptions. Witnesses establish the calculation, not the authenticity of evidence or completeness of finite worlds. Dynamic claim reporting and external proof search are future work.' });
+export const CHRISTOPHER_MODELS = Object.freeze([CHRISTOPHER, CHRISTOPHER_V2]);
+export function christopherModel(version) {
+  const model = CHRISTOPHER_MODELS.find(m => m.version === version);
+  if (!model) fail(400, 'model_version', 'Use modelVersion 0.1.0 or 0.2.0.');
+  return model;
+}
 const LIMIT = CHRISTOPHER.limits;
 const object = x => x !== null && typeof x === 'object' && !Array.isArray(x);
 const check = (yes, code, message) => { if (!yes) fail(400, code, message); };
@@ -19,10 +30,12 @@ const add = (a, b) => rational(a.n * b.d + b.n * a.d, a.d * b.d);
 const neg = a => ({ n: -a.n, d: a.d });
 const sub = (a, b) => add(a, neg(b));
 const mul = (a, b) => rational(a.n * b.n, a.d * b.d);
+const div = (a, b) => rational(a.n * b.d, a.d * b.n);
 const cmp = (a, b) => { const n = a.n * b.d - b.n * a.d; return n < 0n ? -1 : n > 0n ? 1 : 0; };
 const min = (a, b) => cmp(a, b) <= 0 ? a : b;
 const max = (a, b) => cmp(a, b) >= 0 ? a : b;
 const abs = a => a.n < 0n ? neg(a) : a;
+const fraction = a => ({ numerator: String(a.n), denominator: String(a.d) });
 function decimal(value) {
   // Decimal quantities stay exact. No floating-point tolerance can turn zero
   // into a violation. Bounded decimal inputs also bound BigInt arithmetic.
@@ -49,6 +62,7 @@ function formatted(a) {
   }
   return sign + s;
 }
+export const canonicalQuantity = value => formatted(decimal(value));
 function interval(x) {
   check(object(x), 'invalid_interval', 'Supply min and max decimal bounds.');
   const lo = decimal(x.min), hi = decimal(x.max);
@@ -62,7 +76,7 @@ function scope(x) {
 const checkpoint = async signal => { signal?.throwIfAborted(); await yieldTurn(); signal?.throwIfAborted(); };
 
 export async function evaluateChristopher(input, { signal } = {}) {
-  check(object(input) && input.modelVersion === CHRISTOPHER.version, 'model_version', 'Use modelVersion 0.1.0.');
+  const model = christopherModel(object(input) ? input.modelVersion : undefined), explain = model.version === CHRISTOPHER_V2.version;
   check(['intervals', 'finite'].includes(input.stateSpace), 'invalid_state_space', 'Choose intervals or finite stateSpace.');
   const scoped = scope(input.scope), ids = new Set(), variables = new Map(), observations = new Map(), claims = new Map();
   function unique(x) { check(ident(x) && !ids.has(x), 'duplicate_or_invalid_id', 'Use globally unique bounded IDs for variables, observations and claims.'); ids.add(x); }
@@ -150,12 +164,16 @@ export async function evaluateChristopher(input, { signal } = {}) {
     compatible = conflicts.length ? [] : worlds.filter(w => [...bounds].every(([id, b]) => cmp(w.values.get(id), b[0]) >= 0 && cmp(w.values.get(id), b[1]) <= 0));
   } else check(input.worlds === undefined, 'invalid_state_space', 'worlds are accepted only in finite mode.');
   const empty = conflicts.length > 0 || compatible?.length === 0;
-  const calculated = new Map(), residuals = new Map(), truthByClaim = new Map();
+  const calculated = new Map(), residuals = new Map(), truthByClaim = new Map(), calculations = new Map();
+  const witness = (values, c, v, worldId) => ({
+    ...(worldId ? { worldId } : {}), values: Object.fromEntries([...values].map(([id, value]) => [id, fraction(value)])),
+    residual: c.kind === 'linear' ? fraction(affine(c, values)) : null, violation: fraction(v),
+  });
   await checkpoint(signal);
   for (const c of ordered) {
     const grounding = groundings.get(c.id);
     if (empty || !grounding.complete) { calculated.set(c.id, null); continue; }
-    let lo, hi, lowWorldId, highWorldId;
+    let lo, hi, lowWorldId, highWorldId, witnesses;
     if (input.stateSpace === 'intervals') {
       let a = neg(c.rhs), b = a;
       for (const [id, coefficient] of c.terms) {
@@ -166,6 +184,25 @@ export async function evaluateChristopher(input, { signal } = {}) {
       residuals.set(c.id, { min: formatted(a), max: formatted(b), unit: c.unit, satisfies: c.relation === '==' ? '== 0' : '<= 0' });
       if (c.relation === '==') { lo = cmp(a, ZERO) <= 0 && cmp(b, ZERO) >= 0 ? ZERO : min(abs(a), abs(b)); hi = max(abs(a), abs(b)); }
       else { lo = max(ZERO, a); hi = max(ZERO, b); }
+      if (explain) {
+        const lowerCorner = new Map([...bounds].map(([id, range]) => [id, range[0]])), upperCorner = new Map(lowerCorner);
+        for (const [id, coefficient] of c.terms) {
+          const increasing = cmp(c.relation === '>=' ? neg(coefficient) : coefficient, ZERO) >= 0, range = bounds.get(id);
+          lowerCorner.set(id, range[increasing ? 0 : 1]); upperCorner.set(id, range[increasing ? 1 : 0]);
+        }
+        let lowerValues = lowerCorner, upperValues = upperCorner;
+        if (c.relation === '==') {
+          upperValues = cmp(abs(a), abs(b)) >= 0 ? lowerCorner : upperCorner;
+          if (cmp(a, ZERO) <= 0 && cmp(b, ZERO) >= 0) {
+            // Interpolating the extremal corners gives a feasible zero residual.
+            // Its coordinates can be nonterminating decimals (e.g. 1/3), so
+            // witnesses use reduced fractions, never rounded decimal strings.
+            const t = cmp(a, b) === 0 ? ZERO : div(neg(a), sub(b, a));
+            lowerValues = new Map([...lowerCorner].map(([id, value]) => [id, add(value, mul(t, sub(upperCorner.get(id), value)))]));
+          } else lowerValues = cmp(abs(a), abs(b)) <= 0 ? lowerCorner : upperCorner;
+        }
+        witnesses = { lower: witness(lowerValues, c, lo), upper: witness(upperValues, c, hi) };
+      }
     } else {
       const truths = []; let rMin, rMax;
       for (let i = 0; i < compatible.length; i++) {
@@ -181,27 +218,38 @@ export async function evaluateChristopher(input, { signal } = {}) {
       }
       truthByClaim.set(c.id, truths);
       if (rMin !== undefined) residuals.set(c.id, { min: formatted(rMin), max: formatted(rMax), unit: c.unit, satisfies: c.relation === '==' ? '== 0' : '<= 0' });
+      if (explain) witnesses = { lower: witness(compatible.find(w => w.id === lowWorldId).values, c, lo, lowWorldId), upper: witness(compatible.find(w => w.id === highWorldId).values, c, hi, highWorldId) };
     }
     calculated.set(c.id, { lower: formatted(lo), upper: formatted(hi), unit: c.unit, ...(lowWorldId ? { lowerWitnessWorldId: lowWorldId, upperWitnessWorldId: highWorldId } : {}) });
+    if (explain) calculations.set(c.id, { method: input.stateSpace === 'intervals' ? 'affine_interval_extrema' : 'exhaustive_finite_evaluation',
+      ...(compatible ? { checkedWorlds: compatible.length } : {}), witnesses });
     await checkpoint(signal);
   }
   const results = [...claims.values()].map(c => {
     const grounding = groundings.get(c.id), gap = calculated.get(c.id);
     const status = empty ? 'evidence_conflict' : !grounding.complete ? 'missing_evidence' : gap.upper === '0' ? 'compatible' : gap.lower !== '0' ? 'deviation' : 'unresolved';
-    return { id: c.id, text: c.text, status, gap, grounding, orientedResidual: residuals.get(c.id) || null };
+    const definition = c.kind === 'linear' ? { kind: c.kind, unit: c.unit, terms: [...c.terms].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([variableId, coefficient]) => ({ variableId, coefficient: formatted(coefficient) })), relation: c.relation, rhs: formatted(c.rhs) } : { kind: c.kind, claimIds: [...c.claimIds].sort() };
+    return { id: c.id, text: c.text, status, gap, grounding, orientedResidual: residuals.get(c.id) || null,
+      ...(explain ? { mathematics: { status: gap ? 'calculated' : 'not_calculated', definition,
+        violationRule: c.kind !== 'linear' ? '0 when the proposition holds in a world; 1 otherwise' : c.relation === '==' ? 'abs(residual)' : 'max(0, residual)',
+        residualDefinition: c.kind !== 'linear' ? null : c.relation === '>=' ? 'rhs - sum(coefficient * variable)' : 'sum(coefficient * variable) - rhs',
+        ...(gap ? calculations.get(c.id) : { reason: status }),
+      } } : {}) };
   });
   const sourceGroups = [...new Set([...observations.values()].map(o => o.sourceGroup))];
   const variableConstraints = [...variables].map(([id, v]) => {
     const b = bounds.get(id);
-    return { variableId: id, domain: { min: formatted(v.bounds[0]), max: formatted(v.bounds[1]) },
+    return { variableId: id, ...(explain ? { unit: v.unit } : {}), domain: { min: formatted(v.bounds[0]), max: formatted(v.bounds[1]) },
       observationIds: [...observations.values()].filter(o => o.variableId === id).map(o => o.id),
       intersection: cmp(b[0], b[1]) <= 0 ? { min: formatted(b[0]), max: formatted(b[1]) } : null };
   });
-  return { model: { id: CHRISTOPHER.id, version: CHRISTOPHER.version }, scope: input.scope,
+  return { model: { id: model.id, version: model.version, ...(explain ? { alias: model.alias } : {}) }, scope: input.scope,
     stateSpace: { type: input.stateSpace, status: empty ? 'empty' : 'nonempty', variableConstraints, ...(compatible ? { candidateWorlds: worlds.length, compatibleWorlds: compatible.length } : {}),
       interpretation: input.stateSpace === 'finite' ? 'Exact bounds over supplied finite worlds only. Enumeration completeness is not verified.' : 'Exact affine-violation bounds over the declared rectangular interval set. Correlations are not modeled.' },
     claims: results, conflicts,
     traceability: { claims: results.length, complete: results.filter(c => c.grounding.complete).length, sourceGroups: sourceGroups.length,
       observationCount: observations.size, interpretation: 'Traceability is structural, not a probability or independent validation of the observations. Repeated sources are not independent votes.' },
-    runtime: { execution: 'colossus_cpu', upstreamRequests: 0, providerCostUsd: 0, infrastructureCostUsd: null }, limitation: CHRISTOPHER.limitation };
+    ...(explain ? { assumptions: { evidenceAuthenticity: 'not_verified', units: 'declared_no_automatic_conversion',
+      stateSpace: input.stateSpace === 'intervals' ? 'rectangular_intersection_without_correlations' : 'supplied_worlds_only_completeness_not_verified' } } : {}),
+    runtime: { execution: 'colossus_cpu', upstreamRequests: 0, providerCostUsd: 0, infrastructureCostUsd: null }, limitation: model.limitation };
 }
