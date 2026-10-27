@@ -23,6 +23,7 @@ import { demoInput, demoExamples } from './christopherFixtures.mjs';
 import { ChristopherWorkspace } from './christopherWorkspace.mjs';
 import { christopherShell } from './christopherShell.mjs';
 import { ProductAccess } from './productAccess.mjs';
+import { ResearchDelegation } from './researchDelegation.mjs';
 
 async function boundedJson(stream, limit, upstream = false) {
   const chunks = []; let size = 0;
@@ -42,6 +43,7 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
   const media = new MediaObserver(config.media, fetcher);
   const control = new ControlPlane(config, fetcher, endpointFetcher, controlStore), activeControllers = new Map();
   const productAccess = new ProductAccess(control);
+  const researchDelegation = new ResearchDelegation(config, fetcher);
   const christopherLearning = new ChristopherLearning(control.store, { captureEnabled: config.christopherCaptureEnabled, retentionReady: config.christopherRetentionReady });
   const christopherWorkspace = new ChristopherWorkspace(fetcher);
   let inflight = 0, controlInflight = 0, draining = false;
@@ -63,6 +65,9 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
     try { user = await response.json(); }
     catch { fail(503, 'auth_unavailable', 'Account access could not be checked.'); }
     if (!user || typeof user !== 'object' || Array.isArray(user)) fail(503, 'auth_unavailable', 'Account access could not be checked.');
+    return protectedIdentity(user, callingSystem, token);
+  }
+  function protectedIdentity(user, callingSystem, token) {
     const role = callingSystem === 'lab' && user.app_metadata?.lab ? user.app_metadata.lab.role : user.app_metadata?.role;
     // A Colossus assignment can revoke access independently of Workflow.
     const assignment = user.app_metadata?.[callingSystem];
@@ -103,9 +108,15 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
     const client = clientHeader ? await control.authenticateKey(clientHeader) : null;
     if (clientHeader && !client) fail(401, 'service_key_invalid', 'Supply a valid Colossus system key.');
     const scoped = bearer?.startsWith('cs_') ? await control.authenticateKey(bearer) : null;
-    if (scoped) return scoped;
     const attach = identity => client ? { ...identity, productVerified: true, systemId: client.systemId, keyId: client.keyId, allowedModels: client.allowedModels,
       requireGroup: client.requireGroup, organizationIds: client.organizationIds, registrationProviderIds: client.registrationProviderIds } : identity;
+    if (researchDelegation.requested(req)) {
+      const { user, ...admission } = await researchDelegation.authenticate(req, client);
+      const account = protectedIdentity(user, 'enigma');
+      if (!['admin', 'professional', 'participant'].includes(account.role)) fail(403, 'analyst_required', 'Background research requires an active analyst account.');
+      return attach({ ...account, research: admission });
+    }
+    if (scoped) return scoped;
     const serviceId = () => 'service-' + createHash('sha256').update('colossus-usage\0').update(bearer).digest('hex').slice(0, 12);
     if (config.adminKey && equalSecret(bearer, config.adminKey)) return attach({ kind: 'service', id: serviceId(), admin: true, explicitAdmin: true });
     if (config.keys.some(key => equalSecret(bearer, key))) return attach({ kind: 'service', id: serviceId(), admin: !config.adminKey });
@@ -144,12 +155,14 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
     requireApprovedProvider(config, route, { personalDeepSeek: isDeepSeek(route) });
     const prepared = providerRequest(route, request, task);
     if (runtimeVertexRoute(config, route)) prepared.headers.Authorization = `Bearer ${await vertexTokens.auth()}`;
+    await researchDelegation.consume(identity);
     const reservation = await control.reserve(identity, route, request, process.requestId, process.calls.length + 1);
     const call = monitoring.call(process, route, engine);
     Object.assign(call, route.routing || {});
     call.reservation = reservation;
     call.providerId = route.providerId || null;
     let response;
+    if (identity.research) identity.research.providerStarted = true;
     try { response = await (route.managed || !control.enabled ? fetcher : endpointFetcher)(prepared.url, { method: 'POST', redirect: 'error',
       headers: prepared.headers, body: JSON.stringify(prepared.request), signal }); }
     catch (error) { monitoring.finishCall(call, signal.aborted ? 'cancelled' : 'failed'); if (signal.aborted) throw error; fail(502, 'provider_unavailable', 'The model provider is unavailable.'); }
@@ -190,7 +203,7 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
   }
   const server = http.createServer(async (req, res) => {
     const requestId = randomUUID(), started = Date.now();
-    let operation = 'request', admitted = false, timer, process, cancellationTimer, errorCode;
+    let operation = 'request', admitted = false, timer, process, cancellationTimer, errorCode, identity;
     const controller = new AbortController();
     async function finishProcess(status, errorCode) {
       try {
@@ -202,7 +215,10 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
       }
       catch { logger({ service: 'colossus', requestId, operation: 'usage_record_failed', code: 'usage_unavailable' }); }
     }
-    async function complete(body, status = 'completed') { await finishProcess(status); return json(res, body); }
+    async function complete(body, status = 'completed') {
+      await researchDelegation.checkpoint(identity, 200, body);
+      await finishProcess(status); return json(res, body);
+    }
     res.once('close', () => { if (!res.writableFinished) controller.abort(); });
     res.setHeader('X-Request-Id', requestId);
     res.setHeader('Cache-Control', 'no-store');
@@ -343,7 +359,9 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
           Object.hasOwn(body, 'role') ? { p_user_id: body.userId, p_role: body.role } : { p_user_id: body.userId, p_disabled: body.disabled });
         return json(res, { updated: true });
       }
-      const identity = await authenticate(req);
+      identity = await authenticate(req);
+      if (identity.research && !(await productAccess.policy()).enabled)
+        fail(503, 'research_license_setup', 'Background research requires the licensed product access policy.');
       await productAccess.authorize(identity, url.pathname.startsWith('/v1/christopher') ? 'christopher' : null);
       const activity = req.headers['x-colossus-activity'];
       if (activity !== undefined) {
@@ -398,6 +416,7 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
       if (!(req.headers['content-type'] || '').startsWith('application/json')) fail(415, 'content_type', 'Use application/json.');
       const body = await boundedJson(req, config.bodyLimit);
       if (!body || typeof body !== 'object' || Array.isArray(body)) fail(400, 'invalid_request', 'Supply a JSON object.');
+      researchDelegation.bindBody(identity, body, url.pathname);
       if (url.pathname === '/v1/lab/models') {
         operation = 'lab_registration';
         const result = await control.registerLabModel(body, identity);
@@ -453,10 +472,12 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
         operation = 'observe_media';
         let call;
         const route = config.media ? await control.mediaRoute(identity) : null;
+        await researchDelegation.consume(identity);
         const result=await media.observe(body,controller.signal,async bounds=>{
           const reservation = await control.reserve(identity, route, { max_tokens: bounds.maxOutputTokens }, process.requestId, process.calls.length + 1, bounds.inputTokens);
           call=monitoring.call(process,{alias:'broadcast-media',model:config.media.model}, {id:'broadcast-observation',version:'1.0.0'});
           call.reservation = reservation; call.providerId = route.providerId;
+          if (identity.research) identity.research.providerStarted = true;
         });
         if(call){monitoring.finishCall(call,'completed',result.usage,200);call.modalities=result.usage.modalities;call.cost=mediaCostUsd(result.usage,result.model);}
         return complete({requestId,...result},result.observation?'completed':'failed');
@@ -517,12 +538,20 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
     } catch (error) {
       const cancelled = controller.signal.reason === 'admin_cancelled';
       errorCode = cancelled ? 'admin_cancelled' : controller.signal.aborted ? 'request_timeout' : error instanceof ApiError ? error.code : 'service_error';
+      let responseStatus = cancelled ? 409 : controller.signal.aborted ? 504 : error instanceof ApiError ? error.status : 500;
+      let responseBody = { error: { code: errorCode,
+        message: cancelled ? 'An administrator cancelled this process.' : controller.signal.aborted ? 'The request exceeded its processing window or was cancelled.' : error instanceof ApiError ? error.message : 'The request could not be completed.', requestId,
+        ...(error.validation ? { validation: error.validation } : {}) }, ...(error.accounting || {}) };
+      try {
+        await researchDelegation.checkpoint(identity, responseStatus, responseBody,
+          identity?.research?.providerStarted && !error.accounting?.usage ? 'unknown' : 'failed');
+      } catch {
+        responseStatus = 503; errorCode = 'research_result_pending';
+        responseBody = { error: { code: errorCode, message: 'The background research result could not be durably confirmed. Its admission remains reserved for reconciliation.', requestId } };
+      }
       await finishProcess(controller.signal.aborted ? 'cancelled' : 'failed', errorCode);
       if (!res.headersSent && !res.destroyed) {
-        const timedOut = controller.signal.aborted;
-        json(res, { error: { code: cancelled ? 'admin_cancelled' : timedOut ? 'request_timeout' : error instanceof ApiError ? error.code : 'service_error',
-          message: cancelled ? 'An administrator cancelled this process.' : timedOut ? 'The request exceeded its processing window or was cancelled.' : error instanceof ApiError ? error.message : 'The request could not be completed.', requestId,
-          ...(error.validation ? { validation: error.validation } : {}) }, ...(error.accounting || {}) }, cancelled ? 409 : timedOut ? 504 : error instanceof ApiError ? error.status : 500);
+        json(res, responseBody, responseStatus);
       } else if (!res.writableFinished) res.destroy();
     } finally {
       clearTimeout(timer); clearInterval(cancellationTimer); activeControllers.delete(requestId);

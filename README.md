@@ -272,3 +272,28 @@ separately; the endpoint configuration alone is not a zero-retention attestation
 ## Preview password sign-in
 
 The owner requested email/password sign-in for every approved role without OTP or phone verification. Administrator assurance gates and the challenge interface are removed. Live identity, account status, role, origin and product-approval checks remain in place. Clear old factors with the shared Workspace rollout.
+
+## Enigma background research delegation
+
+`COLOSSUS_ENIGMA_RESEARCH_SERVICE_ACCOUNT` enables a narrow background path for
+Enigma's exact Cloud Run runtime service account. Install Enigma's
+`database/011_background_research.sql` first and keep product-license enforcement
+enabled. Existing interactive bearer-token calls continue to use their current
+authentication path.
+
+Delegated requests require a Google-signed ID token whose audience is the
+configured Colossus origin, the active scoped Enigma system key, and an admitted
+job, operation, lease and exact request-body hash. Only `POST /v1/runs` and
+`POST /v1/media/observe` accept delegation. Colossus derives the owner from the
+private SQL journal, reads current protected Auth data, and applies the usual
+role, product-license, group, organization, model, provider and spending controls.
+Caller-supplied owner fields grant no authority. No user access or refresh token
+is saved or impersonated.
+
+SQL consumes each bound operation once before inference. Colossus checkpoints
+the normalized result privately before returning it, allowing Enigma to recover
+a lost response without calling the provider again. Recovery context excludes
+raw audio and JPEG bytes. A genuinely unknown provider outcome retains its
+reserved exposure and requires reconciliation; expiry does not prove zero usage
+or authorize a second dispatch. Enigma's audited administrator resolution is the
+explicit path for irreducible uncertainty.
