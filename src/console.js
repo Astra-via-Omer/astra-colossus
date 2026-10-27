@@ -225,7 +225,7 @@ function renderUsers(users) {
     const state = document.createElement('td'), actions = document.createElement('td');
     email.textContent = user.email + (user.current ? ' (your account)' : ''); state.textContent = user.status;
     const select = document.createElement('select'); select.setAttribute('aria-label', `Role for ${user.email}`);
-    for (const name of ['admin', 'participant', 'reader', 'viewer']) select.add(new Option(name, name));
+    for (const name of ['admin', 'professional', 'participant', 'reader', 'viewer']) select.add(new Option(name === 'professional' ? 'Astra-via Professional' : name, name));
     select.value = user.role; select.dataset.locked = String(user.current); role.append(select);
     const save = document.createElement('button'); save.type = 'button'; save.textContent = 'Review role'; save.className = 'secondary';
     save.dataset.locked = String(user.current); save.addEventListener('click', () => reviewChange(user, { role: select.value }));
