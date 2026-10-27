@@ -69,7 +69,7 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
     if (!user.id || user.app_metadata?.disabled || user.deleted_at || (user.banned_until && Date.parse(user.banned_until) > Date.now()) ||
         assignment?.enabled === false || (user.app_metadata?.system_access && user.app_metadata.system_access[callingSystem] !== true) ||
         (callingSystem === 'workflow' && (user.app_metadata?.workspace_scope === 'workflow' || user.app_metadata?.workspace_approved === false)) ||
-        !['admin', 'participant', 'reader', 'viewer'].includes(role)) fail(403, 'access_denied', 'This account cannot access Colossus.');
+        !['admin', 'professional', 'participant', 'reader', 'viewer'].includes(role)) fail(403, 'access_denied', 'This account cannot access Colossus.');
     const name = user.user_metadata?.full_name || user.user_metadata?.name;
     return { kind: 'account', admin: role === 'admin', astraAdmin: user.app_metadata?.role === 'admin', role, id: user.id,
       email: typeof user.email === 'string' ? user.email.slice(0, 254) : '',
@@ -336,7 +336,7 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
         const body = await boundedJson(req, 4096);
         if (!body || typeof body.userId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(body.userId) ||
           (Object.hasOwn(body, 'role') === Object.hasOwn(body, 'disabled')) ||
-          (Object.hasOwn(body, 'role') && !['admin', 'participant', 'reader', 'viewer'].includes(body.role)) ||
+          (Object.hasOwn(body, 'role') && !['admin', 'professional', 'participant', 'reader', 'viewer'].includes(body.role)) ||
           (Object.hasOwn(body, 'disabled') && typeof body.disabled !== 'boolean')) fail(400, 'invalid_account_change', 'Select one user and a role or enabled state.');
         if (body.userId === identity.id) fail(409, 'self_change_denied', 'Ask another Astra admin to change your own account.');
         await accountRpc(identity, Object.hasOwn(body, 'role') ? 'astra_set_user_role' : 'astra_set_user_disabled',
@@ -409,7 +409,7 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
         if (config.production && identity.kind === 'account' && !identity.productVerified) fail(403, 'product_required', 'Send analysis through an authorized Astra product.');
         if (['test_engine', 'evaluate'].includes(operation) && !identity.admin) fail(403, 'admin_required', 'Only admins can test or evaluate engines.');
         if (operation==='observe_media' && identity.kind==='account') {
-          if(!['admin','participant'].includes(identity.role)) fail(403,'analyst_required','Audio/video observation requires an analyst account.');
+          if(!['admin','professional','participant'].includes(identity.role)) fail(403,'analyst_required','Audio/video observation requires an analyst account.');
           if(!equalSecret(req.headers['x-enigma-media-key'],config.mediaIngestKey)) fail(403,'media_gateway_required','Account media analysis must come through the authorized Enigma gateway.');
         }
         const access = await control.groupAccess(identity, !operation.startsWith('christopher_'));
