@@ -125,7 +125,7 @@ test('paused mathematical routes prevent new grants while existing grants stay v
 });
 
 test('granting a mathematical version in the form preserves the server administrator gate', async () => {
-  const config = configuration({ ASTRA_PROVIDER_CONFIG_JSON: '{"key":"synthetic-provider","model":"default-native"}', COLOSSUS_VAULT_SECRET: 'synthetic-local-vault-secret-of-32-characters' });
+  const config = configuration({ COLOSSUS_ROUTES_JSON: JSON.stringify({ 'astra-default': { baseUrl: 'https://provider.example.test/v1', model: 'default-native', capabilities: ['text'] } }), ASTRA_PROVIDER_CONFIG_JSON: '{"key":"synthetic-provider","model":"default-native"}', COLOSSUS_VAULT_SECRET: 'synthetic-local-vault-secret-of-32-characters' });
   const control = new ControlPlane(config, fetch, fetch), actor = { id: 'admin', email: 'admin@example.test' };
   const currentCatalog = { ...catalog, models: [{ ...catalog.models[0], id: 'astra-default' }, ...catalog.models.filter(model => model.native === 'christopher')] };
   const { form, checkbox } = editorForm({ id: 'team', name: 'Research team', memberIds: ['alice'], modelIds: ['astra-default'], activityModels: {} }, currentCatalog);
