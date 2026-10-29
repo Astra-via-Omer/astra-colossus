@@ -11,7 +11,7 @@ async function start(t) {
   const app = createService(configuration({ COLOSSUS_API_KEYS_JSON: '["local-service-test"]', COLOSSUS_ADMIN_KEY: 'local-admin-test',
     ASTRA_PROVIDER_CONFIG_JSON: '{"key":"unused-provider-test","model":"unused-model"}', SUPABASE_URL: 'https://accounts.example', SUPABASE_ANON_KEY: 'public-key' }), {
     logger: entry => logs.push(entry), fetcher: async (url, options) => {
-      if (url.endsWith('/auth/v1/user')) return Response.json({ id: 'user1', email: actor.email, app_metadata: { role: ['Bearer participant-token', 'Bearer lab-only-admin-token'].includes(options.headers.Authorization) ? 'participant' : 'admin', lab: { role: 'admin' }, disabled } });
+      if (url.endsWith('/auth/v1/user')) return Response.json({ id: options.headers.Authorization === 'Bearer personal-token' ? 'personal-admin' : options.headers.Authorization === 'Bearer unassigned-token' ? 'unassigned-admin' : 'user1', email: actor.email, app_metadata: { role: ['Bearer participant-token', 'Bearer lab-only-admin-token'].includes(options.headers.Authorization) ? 'participant' : 'admin', lab: { role: 'admin' }, disabled } });
       unexpectedRequests++; throw Error('No provider or source HTTP fetch is allowed for native computation.');
     } });
   await new Promise(resolve => app.server.listen(0, '127.0.0.1', resolve));
@@ -118,5 +118,68 @@ test('0.2.0 requires its own scoped grant and preserves independent version paus
   assert.equal((await app.call('/v1/christopher/evaluate', example())).status, 503);
   await app.control.save('providers', { id: 'managed-christopher', enabled: false }, actor);
   assert.equal((await app.call('/v1/christopher/evaluate', input)).status, 503);
+  assert.equal(app.unexpectedRequests, 0);
+});
+
+test('Workspace CPU checks require the administrator own explicit version-granted group even without a license policy', async t => {
+  const app = await start(t), input = { ...example(), modelVersion: '0.2.0' };
+  assert.equal((await app.control.store.get('accessPolicies/products')).data, null);
+  await app.control.save('groups', { id: 'corporate', name: 'Corporate pilot', memberIds: ['user1'], modelIds: ['astra-default', 'christopher', 'christopher:0.2.0'] }, actor);
+  await app.control.save('groups', { id: 'personal', name: 'Personal administrator', memberIds: ['personal-admin'], modelIds: ['astra-default'] }, actor);
+  const key = await app.control.issueKey({ name: 'Shared Workspace pilot', systemId: 'workflow', requireGroup: false, allowedModels: ['christopher', 'christopher:0.2.0'] }, actor);
+  const headers = { 'X-Colossus-Service-Key': key.oneTimeKey };
+  const allowed = await app.call('/v1/christopher/evaluate', input, 'account-token', headers);
+  assert.equal(allowed.status, 200); const result = await allowed.json();
+  assert.equal(result.runtime.upstreamRequests, 0);
+  const record = (await app.monitoring.records(1)).records.find(row => row.requestId === result.requestId);
+  assert.equal(record.groupId, 'corporate'); assert.equal(record.keyId, key.key.id); assert.equal(record.calls[0].execution, 'local_cpu');
+  assert.equal((await app.call('/v1/christopher/evaluate', input, 'personal-token', headers)).status, 403);
+  assert.equal((await app.call('/v1/christopher/evaluate', input, 'unassigned-token', headers)).status, 403);
+  assert.equal((await app.call('/v1/christopher/evaluate', input, 'participant-token', headers)).status, 403);
+  assert.equal((await app.call('/v1/christopher/evaluate', input, 'personal-token')).status, 200, 'The private manual Colossus experiment retains its existing administrator policy');
+  await app.control.store.mutate(['groups/corporate'], ([group]) => [{ ...group, memberIds: [] }]);
+  const inconsistent = await app.call('/v1/christopher/evaluate', input, 'account-token', headers);
+  assert.equal(inconsistent.status, 403); assert.equal((await inconsistent.json()).error.code, 'explicit_group_required');
+  assert.equal((await app.control.store.get('accessPolicies/products')).data, null);
+  assert.equal(app.unexpectedRequests, 0);
+});
+
+test('Workspace CPU checks require both experiment and selected-version group and key grants during setup', async t => {
+  const app = await start(t), input = { ...example(), modelVersion: '0.2.0' };
+  const key = await app.control.issueKey({ name: 'Workspace pilot', systemId: 'workflow', requireGroup: false, allowedModels: ['christopher', 'christopher:0.2.0'] }, actor);
+  const headers = { 'X-Colossus-Service-Key': key.oneTimeKey };
+  for (const grants of [['christopher'], ['christopher:0.2.0']]) {
+    await app.control.save('groups', { id: 'corporate', name: 'Corporate pilot', memberIds: ['user1'], modelIds: grants }, actor);
+    const response = await app.call('/v1/christopher/evaluate', input, 'account-token', headers);
+    assert.equal(response.status, 403); assert.equal((await response.json()).error.code, 'model_not_granted');
+  }
+  await app.control.save('groups', { id: 'corporate', modelIds: ['christopher', 'christopher:0.2.0'] }, actor);
+  for (const grants of [['christopher'], ['christopher:0.2.0']]) {
+    const limited = await app.control.issueKey({ name: 'Limited Workspace pilot', systemId: 'workflow', requireGroup: false, allowedModels: grants }, actor);
+    const response = await app.call('/v1/christopher/evaluate', input, 'account-token', { 'X-Colossus-Service-Key': limited.oneTimeKey });
+    assert.equal(response.status, 403); assert.equal((await response.json()).error.code, 'model_not_granted');
+  }
+  assert.equal((await app.call('/v1/christopher/evaluate', input, 'account-token', headers)).status, 200);
+  assert.equal((await app.control.store.get('accessPolicies/products')).data, null);
+  assert.equal(app.unexpectedRequests, 0);
+});
+
+test('Workspace group admission retains independent version pauses and live group/provider revocations', async t => {
+  const app = await start(t), input = { ...example(), modelVersion: '0.2.0' };
+  await app.control.save('groups', { id: 'corporate', name: 'Corporate pilot', memberIds: ['user1'], modelIds: ['christopher', 'christopher:0.2.0'] }, actor);
+  const key = await app.control.issueKey({ name: 'Workspace pilot', systemId: 'workflow', requireGroup: false, allowedModels: ['christopher', 'christopher:0.2.0'] }, actor);
+  const headers = { 'X-Colossus-Service-Key': key.oneTimeKey };
+  await app.control.save('models', { id: 'christopher:0.2.0', enabled: false }, actor);
+  assert.equal((await app.call('/v1/christopher/evaluate', input, 'account-token', headers)).status, 503);
+  assert.equal((await app.call('/v1/christopher/evaluate', example(), 'account-token', headers)).status, 200);
+  await app.control.save('models', { id: 'christopher:0.2.0', enabled: true }, actor);
+  await app.control.save('models', { id: 'christopher', enabled: false }, actor);
+  assert.equal((await app.call('/v1/christopher/evaluate', input, 'account-token', headers)).status, 200);
+  assert.equal((await app.call('/v1/christopher/evaluate', example(), 'account-token', headers)).status, 503);
+  await app.control.save('groups', { id: 'corporate', enabled: false }, actor);
+  assert.equal((await app.call('/v1/christopher/evaluate', input, 'account-token', headers)).status, 403);
+  await app.control.save('groups', { id: 'corporate', enabled: true }, actor);
+  await app.control.save('providers', { id: 'managed-christopher', enabled: false }, actor);
+  assert.equal((await app.call('/v1/christopher/evaluate', input, 'account-token', headers)).status, 503);
   assert.equal(app.unexpectedRequests, 0);
 });

@@ -93,10 +93,15 @@ unrelated save. A paused model or mathematical provider prevents a new selection
 an existing paused grant remains visible and can be removed. Native CPU checks
 need no external provider credential.
 
-For a backend pilot, keep the product key on the server and grant it the exact
-version. If product-license enforcement is active, retain the `christopher`
-experiment grant in both the group and scoped key as well as
-`christopher:0.2.0`, and verify the administrator's active product license.
+For a Workspace backend pilot, keep the product key on the server. Scoped
+Workflow account calls require the administrator's own explicit active group
+membership and both the `christopher` experiment and selected version grants
+in that group and key, including while product licensing is in setup mode.
+The shared backend key does not grant mathematical access to administrators in
+other groups. If product-license enforcement is active, the administrator's
+matching active product license is additionally required. The private Colossus
+administrator console and non-Workflow manual experiment retain their existing
+access checks.
 Group assignment does not bypass Christopher's global-administrator check or
 extend it to participants. These grants also do not change the default text
 model, automatically run checks on PDF reviews or convert source assertions

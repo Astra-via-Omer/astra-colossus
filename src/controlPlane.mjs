@@ -401,7 +401,20 @@ export class ControlPlane {
   async christopherRoute(identity, version = CHRISTOPHER.version) {
     requireChristopherAdmin(identity);
     const manifest = christopherModel(version);
+    const workspace = identity.kind === 'account' && identity.systemId === 'workflow' && identity.productVerified === true && !!identity.keyId;
     const { group, organizationId } = await this.groupAccess(identity, false);
+    // Workspace's shared backend key must not grant every global administrator
+    // the pilot. Require their own explicit group grants even during license setup.
+    if (workspace) {
+      const assignment = (await this.store.get('groupMembers/' + identity.id)).data;
+      if (!group?.enabled || assignment?.groupId !== group.id || !Array.isArray(group.memberIds) || !group.memberIds.includes(identity.id))
+        fail(403, 'explicit_group_required', 'Workspace mathematical checks require an explicit active model group assignment.');
+      for (const alias of new Set([CHRISTOPHER.alias, manifest.alias])) {
+        if (!Array.isArray(group.modelIds) || !group.modelIds.includes(alias))
+          fail(403, 'model_not_granted', 'Your Workspace model group does not grant this Christopher experiment and version.');
+        await this.authorize(identity, alias);
+      }
+    }
     await this.authorize(identity, manifest.alias);
     if (this.enabled) {
       const model = (await this.store.get('models/' + manifest.alias)).data;
