@@ -66,7 +66,10 @@ export function configuration(env = process.env) {
   if (env.NODE_ENV === 'production' && !env.COLOSSUS_SESSION_SECRET) throw Error('Production needs a dedicated COLOSSUS_SESSION_SECRET');
   if (env.NODE_ENV === 'production' && providerKey && keys.some(key => equalSecret(key, providerKey))) throw Error('Provider credentials cannot be gateway client credentials');
   if(env.COLOSSUS_MEDIA_INGEST_KEY && (env.COLOSSUS_MEDIA_INGEST_KEY.length<32 || env.COLOSSUS_MEDIA_INGEST_KEY.length>512 || /\s/.test(env.COLOSSUS_MEDIA_INGEST_KEY))) throw Error('Invalid media gateway credential');
+  if (env.COLOSSUS_ENIGMA_RESEARCH_SERVICE_ACCOUNT && !/^[a-z][a-z0-9-]{4,62}@[a-z][a-z0-9-]{4,61}[a-z0-9]\.iam\.gserviceaccount\.com$/.test(env.COLOSSUS_ENIGMA_RESEARCH_SERVICE_ACCOUNT))
+    throw Error('Invalid Enigma research runtime service account');
   return { routes, keys, vertex, providerMigrationMode: env.COLOSSUS_PROVIDER_MIGRATION_MODE === 'prepare' ? 'prepare' : 'strict',
+    researchServiceAccount: env.COLOSSUS_ENIGMA_RESEARCH_SERVICE_ACCOUNT || '',
     managedProviderKey: providerKey, media: mediaConfiguration(env), mediaIngestKey:env.COLOSSUS_MEDIA_INGEST_KEY || '', adminKey: env.COLOSSUS_ADMIN_KEY || '', origin,
     christopherCaptureEnabled: env.COLOSSUS_CHRISTOPHER_CAPTURE === 'true', christopherRetentionReady: env.COLOSSUS_CHRISTOPHER_RETENTION_READY === 'true',
     requireGroups: env.COLOSSUS_REQUIRE_GROUPS !== 'false',
