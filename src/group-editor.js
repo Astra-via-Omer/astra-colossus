@@ -28,7 +28,7 @@
     if (!model) return 'Choose a registered model.';
     const provider = catalog.providers.find(value => value.id === model.providerId);
     if (!model.enabled || !provider?.enabled) return 'This model or its provider is paused. Enable it in Models or Providers before use.';
-    if (!provider.credentialConfigured && !provider.allowAnonymous) return 'The provider needs a connection credential before use.';
+    if (!provider.native && !provider.credentialConfigured && !provider.allowAnonymous) return 'The provider needs a connection credential before use.';
     const minimum = { workflow: 8000, enigma: 4000, evidence: 1800 }[systemId];
     if (textModel(model) && minimum && model.maxTokens < minimum) return 'Increase this model’s output limit in Models to at least ' + minimum.toLocaleString() + ' tokens for this product.';
     if (catalog.systems.find(value => value.id === systemId)?.enabled === false) return 'This product is paused in Astra systems.';
@@ -40,7 +40,7 @@
     const name = draft.name.trim();
     if (!name || name.length > 160) throw Error('Enter a group name (up to 160 characters).');
     if (draft.memberIds.length > 100) throw Error('A group can contain up to 100 people.');
-    if (!draft.modelIds.length) throw Error('Choose a text model or enable broadcast media.');
+    if (!draft.modelIds.length) throw Error('Choose a text model, broadcast media or a Christopher version.');
     if (draft.modelIds.length > 100) throw Error('A group can contain up to 100 models.');
     if (Object.values(draft.activityModels).some(id => !draft.modelIds.includes(id))) throw Error('A product rule uses a model that is no longer allowed. Update that rule first.');
     return { id: draft.id, name, memberIds: [...draft.memberIds], modelIds: [...draft.modelIds],
@@ -166,11 +166,17 @@
     const mediaModel = catalog.models.find(model => model.id === 'broadcast-media'), mediaHelp = element('p', 'group-help'); mediaBlock.append(mediaHelp); models.append(mediaBlock);
     media.disabled = !mediaModel && !media.checked;
     media.addEventListener('change', () => { if (media.checked) allowModel('broadcast-media'); else draft.modelIds = draft.modelIds.filter(id => id !== 'broadcast-media'); renderModels(); updateSummary(); });
-    const mathBlock = element('div', 'group-media'), mathLabel = element('label', 'group-media-label'), math = element('input'); math.type = 'checkbox'; math.checked = draft.modelIds.includes('christopher');
-    mathLabel.append(math, element('strong', '', 'Enable Christopher mathematical checks')); mathBlock.append(mathLabel);
-    mathBlock.append(element('p', 'group-help', 'Evaluate structured claims and measurements inside Colossus. This uses a separate mathematical API and does not replace the group text model.'));
-    models.append(mathBlock); math.disabled = !catalog.models.some(model => model.id === 'christopher') && !math.checked;
-    math.addEventListener('change', () => { if (math.checked) allowModel('christopher'); else draft.modelIds = draft.modelIds.filter(id => id !== 'christopher'); renderModels(); updateSummary(); });
+    const mathBlock = element('div', 'group-media'), mathControls = [];
+    mathBlock.append(element('h4', '', 'Christopher mathematical access'), element('p', 'group-help', 'Allow each registered version separately. Christopher remains private to global Astra administrators; assigning a group does not grant other members access. Structured checks use a separate API and do not replace the group text model.'));
+    for (const model of catalog.models.filter(model => model.native === 'christopher')) {
+      const label = element('label', 'group-media-label'), check = element('input'), help = element('p', 'group-help'); check.type = 'checkbox';
+      check.setAttribute('aria-label', 'Allow ' + modelLabel(model.id, catalog));
+      label.append(check, element('strong', '', modelLabel(model.id, catalog))); mathBlock.append(label, help);
+      mathControls.push({ model, check, help });
+      check.addEventListener('change', () => { if (check.checked) allowModel(model.id); else draft.modelIds = draft.modelIds.filter(id => id !== model.id); renderModels(); updateSummary(); });
+    }
+    if (!mathControls.length) mathBlock.append(element('p', 'group-help', 'No Christopher versions are registered. Existing model grants are preserved.'));
+    models.append(mathBlock);
     const additional = element('details', 'group-additional'); additional.append(element('summary', '', 'Additional models and detailed rules'));
     additional.append(element('p', 'group-help', 'Keep other models available for requests the default cannot support. This does not retry failed provider calls.'));
     const additionalList = element('div', 'group-additional-list'); additional.append(additionalList);
@@ -188,6 +194,12 @@
         control.help.classList.toggle('group-warning', !effective || !!modelIssue(effective, control.activity.split('.')[0], catalog));
       }
       mediaHelp.textContent = mediaModel ? modelLabel(mediaModel.id, catalog) + ' · Audio and images only. ' + (media.checked ? modelIssue(mediaModel.id, 'enigma', catalog) : '') : 'A Google broadcast connection must be configured before this can be enabled.';
+      for (const { model, check, help } of mathControls) {
+        const issue = modelIssue(model.id, '', catalog); check.checked = draft.modelIds.includes(model.id);
+        check.disabled = !check.checked && !!issue;
+        help.textContent = issue || model.id + ' · Global administrator access and any required product key and license grants are checked separately.';
+        help.classList.toggle('group-warning', !!issue);
+      }
       additionalList.replaceChildren();
       for (const model of catalog.models.filter(model => !model.native && model.id !== selection)) {
         const label = element('label', 'group-person-option'), check = element('input'); check.type = 'checkbox'; check.checked = draft.modelIds.includes(model.id); check.disabled = !check.checked && !model.enabled;
@@ -198,7 +210,7 @@
           draft.modelIds = draft.modelIds.filter(id => id !== model.id);
         } renderModels(); updateSummary(); });
       }
-      const extras = draft.modelIds.filter(id => id !== selection && !['broadcast-media', 'christopher'].includes(id));
+      const extras = draft.modelIds.filter(id => id !== selection && id !== 'broadcast-media' && !mathControls.some(control => control.model.id === id));
       if (extras.length) {
         const order = element('ol', 'group-model-order'); additionalList.append(element('p', 'group-help', 'Additional selection order'), order);
         extras.forEach((id, index) => {
@@ -213,7 +225,7 @@
     }
     modelSearch.addEventListener('input', renderModels);
     const summary = element('div', 'group-save-summary'); summary.setAttribute('role', 'status'); summary.setAttribute('aria-live', 'polite'); root.append(summary);
-    function updateSummary() { const rules = Object.keys(draft.activityModels).length; summary.textContent = `${draft.memberIds.length} ${draft.memberIds.length === 1 ? 'person' : 'people'} · ${selection ? modelLabel(selection, catalog) : 'No default text model'} · ${rules} ${rules === 1 ? 'product rule' : 'product rules'}` + (media.checked ? ' · Broadcast media enabled' : '') + '. Changes apply to new requests after saving.'; }
+    function updateSummary() { const rules = Object.keys(draft.activityModels).length, math = mathControls.filter(control => control.check.checked).map(control => control.model.model); summary.textContent = `${draft.memberIds.length} ${draft.memberIds.length === 1 ? 'person' : 'people'} · ${selection ? modelLabel(selection, catalog) : 'No default text model'} · ${rules} ${rules === 1 ? 'product rule' : 'product rules'}` + (media.checked ? ' · Broadcast media enabled' : '') + (math.length ? ' · Christopher access: ' + math.join(', ') : '') + '. Changes apply to new requests after saving.'; }
     renderPeople(); renderModels(); updateSummary(); showSection(record ? 2 : 0);
     if (!users) void loadUsers();
     return { value: () => { draft.name = name.value; if (!draft.name.trim()) { showSection(0); name.focus(); } return draftValue(draft); }, dispose: () => { disposed = true; requestVersion++; clearTimeout(debounce); } };
