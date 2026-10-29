@@ -10,7 +10,7 @@ import { providerRequest, providerResult, AnthropicStream } from '../src/provide
 import { endpointUrl, publicAddress } from '../src/endpoints.mjs';
 import { tokenUsage, tokenCost } from '../src/usage.mjs';
 
-const settings = { COLOSSUS_REQUIRE_GROUPS: 'false', ASTRA_PROVIDER_CONFIG_JSON: '{"key":"managed-private-key","model":"synthetic-model"}', SUPABASE_URL: 'https://auth.example', SUPABASE_ANON_KEY: 'public-key', COLOSSUS_ORIGIN: 'http://localhost:4002', COLOSSUS_VAULT_SECRET: 'synthetic-stable-vault-secret-of-32-characters' };
+const settings = { COLOSSUS_ROUTES_JSON: JSON.stringify({ 'astra-default': { baseUrl: 'https://provider.example.test/v1', model: 'synthetic-model', capabilities: ['text'] } }), COLOSSUS_REQUIRE_GROUPS: 'false', ASTRA_PROVIDER_CONFIG_JSON: '{"key":"managed-private-key","model":"synthetic-model"}', SUPABASE_URL: 'https://auth.example', SUPABASE_ANON_KEY: 'public-key', COLOSSUS_ORIGIN: 'http://localhost:4002', COLOSSUS_VAULT_SECRET: 'synthetic-stable-vault-secret-of-32-characters' };
 const actor = { kind: 'account', id: '11111111-1111-1111-1111-111111111111', email: 'admin@example.com', admin: true };
 const prices = { inputPerMillion: 2, cachedInputPerMillion: 2, outputPerMillion: 4 };
 function plane() { const config = configuration(settings), store = new ControlStore(config, fetch), control = new ControlPlane(config, fetch, fetch, store); return { config, store, control }; }
@@ -293,7 +293,7 @@ test('DeepSeek registration sends no evidence and connection checks require a pe
  const {config,control,store}=plane();await control.ensure();config.production=true;config.providerMigrationMode='strict';
  let calls=0;control.fetch=async()=>{calls++;throw Error('Must not send credentials');};
  await control.save('providers',{id:'retired',name:'DeepSeek',kind:'compatible',baseUrl:'https://api.deepseek.com',apiKey:'synthetic'},actor);
- await assert.rejects(control.checkConnection('providers','retired',actor),{code:'personal_provider_disabled'});
+ await assert.rejects(control.checkConnection('providers','retired',actor),{code:'provider_policy'});
  await control.save('models',{id:'retired-model',name:'DeepSeek Flash',providerId:'retired',model:'deepseek-flash'},actor);
  await assert.rejects(control.save('providers',{id:'other-deepseek',name:'Unapproved',kind:'compatible',baseUrl:'https://other.deepseek.com',apiKey:'synthetic'},actor),{code:'provider_policy'});
  const archived=await control.save('providers',{id:'retired',enabled:false},actor);assert.equal(archived.enabled,false);assert.equal(calls,0);
@@ -301,14 +301,17 @@ test('DeepSeek registration sends no evidence and connection checks require a pe
 });
 
 test('the production gateway rejects DeepSeek before model calls and billing, then rechecks revocation', async t => {
- const app = await service(t); app.control.config.production = true;
+ const app = await service(t, undefined, { COLOSSUS_ROUTES_JSON: JSON.stringify({ 'astra-default': { baseUrl: 'https://api.deepseek.com', model: 'synthetic-model', capabilities: ['text'] } }) }); app.control.config.production = true;
  // Substitute durable usage storage with the test's record store; provider
  // admission, authorization and budget reservations still run in the gateway.
  app.monitoring.save = async record => app.monitoring.local.set(record.requestId, structuredClone(record));
  let response = await app.call('/v1/chat/completions', { messages: [{ role: 'user', content: 'Synthetic private source.' }] });
- assert.equal(response.status, 403); assert.equal((await response.json()).error.code, 'personal_provider_disabled');
+ assert.equal(response.status, 503); assert.equal((await response.json()).error.code, 'provider_policy');
  assert.equal(app.requests.length, 0); assert.equal((await app.control.store.list('wallets')).length, 0);
  await app.control.savePersonalProviders(actor, { deepseekEnabled: true });
+ response = await app.call('/v1/chat/completions', { messages: [{ role: 'user', content: 'Synthetic private source.' }] });
+ assert.equal(response.status, 503); assert.equal(app.requests.length, 0);
+ await app.control.providerAccess.saveSettings({ deepseekEnabled: true, expectedUpdatedAt: null }, actor);
  response = await app.call('/v1/chat/completions', { messages: [{ role: 'user', content: 'Synthetic private source.' }] });
  assert.equal(response.status, 200); assert.equal(app.requests.length, 1);
  const key = (await app.control.issueKey({ systemId: 'enigma', name: 'Synthetic key', allowedModels: ['astra-default'], requireGroup: false, expiresInDays: 1 }, actor)).oneTimeKey;

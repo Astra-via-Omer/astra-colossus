@@ -16,7 +16,7 @@ async function setup(t) {
     if (url.endsWith('/auth/v1/user')) return Response.json(users.get(options.headers.Authorization?.slice(7)) || {}, { status: users.has(options.headers.Authorization?.slice(7)) ? 200 : 401 });
     calls.push({ url, options }); return Response.json({ choices: [{ message: { content: 'synthetic response' }, finish_reason: 'stop' }], usage: { prompt_tokens: 2, completion_tokens: 2, total_tokens: 4 } });
   };
-  const app = createService(configuration({ COLOSSUS_ORIGIN: origin, SUPABASE_URL: 'https://auth.example', SUPABASE_ANON_KEY: 'public',
+  const app = createService(configuration({ COLOSSUS_ROUTES_JSON: JSON.stringify({ 'astra-default': { baseUrl: 'https://provider.example.test/v1', model: 'synthetic-model', capabilities: ['text'] } }), COLOSSUS_ORIGIN: origin, SUPABASE_URL: 'https://auth.example', SUPABASE_ANON_KEY: 'public',
     ASTRA_PROVIDER_CONFIG_JSON: '{"key":"legacy-private-key","model":"synthetic-model"}', COLOSSUS_REQUIRE_GROUPS: 'true' }), { fetcher, logger: () => {} });
   await new Promise(resolve => app.server.listen(0, '127.0.0.1', resolve));
   t.after(() => new Promise(resolve => { app.server.close(resolve); app.server.closeAllConnections(); }));

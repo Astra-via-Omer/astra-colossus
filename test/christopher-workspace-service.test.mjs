@@ -19,6 +19,9 @@ test('live administrator inspection preserves owned PDF paths, deletion, isolati
       if (url === 'https://api.deepseek.com/chat/completions') { providerCalls++; return Response.json({ choices: [{ message: { content: 'Existing serving answer' }, finish_reason: 'stop' }], usage: { prompt_tokens: 2, completion_tokens: 2, total_tokens: 4 } }); }
       throw Error('Unexpected endpoint');
     } });
+  const operator = { kind: 'account', id: 'owner', admin: true };
+  await app.control.providerAccess.saveSettings({ deepseekEnabled: true, expectedUpdatedAt: null }, operator);
+  await app.control.providerAccess.saveUser('owner', { google: true, deepseek: true, expectedUpdatedAt: null }, operator);
   await new Promise(resolve => app.server.listen(0, '127.0.0.1', resolve));
   t.after(() => new Promise(resolve => { app.server.close(resolve); app.server.closeAllConnections(); }));
   const base = 'http://127.0.0.1:' + app.server.address().port;
