@@ -83,6 +83,25 @@ version's group/key grant must all permit the request. No access assignments
 are silently expanded. Usage history records `christopher@0.2.0`, native CPU
 execution and zero provider tokens. Hosting/storage costs remain separate.
 
+### Preparing administrator access
+
+In **User groups → Edit group → Models**, the **Christopher mathematical
+access** section lists each registered native version separately. Select
+`christopher:0.2.0` for the administrator's group; the legacy `christopher`
+grant remains independent. Existing grants and their order are preserved on an
+unrelated save. A paused model or mathematical provider prevents a new selection;
+an existing paused grant remains visible and can be removed. Native CPU checks
+need no external provider credential.
+
+For a backend pilot, keep the product key on the server and grant it the exact
+version. If product-license enforcement is active, retain the `christopher`
+experiment grant in both the group and scoped key as well as
+`christopher:0.2.0`, and verify the administrator's active product license.
+Group assignment does not bypass Christopher's global-administrator check or
+extend it to participants. These grants also do not change the default text
+model, automatically run checks on PDF reviews or convert source assertions
+into measurements.
+
 ## Validation and scope
 
 `npm test` includes 600 independent Python Fraction reference cases for the
