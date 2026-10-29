@@ -8,7 +8,7 @@ import { createService } from '../src/server.mjs';
 import { builtins, engineRequest, validateResult, compactReviewSources } from '../src/engines.mjs';
 
 const key = 'synthetic-provider-key';
-const env = { COLOSSUS_REQUIRE_GROUPS: 'false', ASTRA_PROVIDER_CONFIG_JSON: JSON.stringify({ key, model: 'test-model' }), COLOSSUS_ORIGIN: 'http://localhost:4002' };
+const env = { COLOSSUS_ROUTES_JSON: JSON.stringify({ 'astra-default': { baseUrl: 'https://provider.example.test/v1', model: 'test-model', capabilities: ['text'] } }), COLOSSUS_REQUIRE_GROUPS: 'false', ASTRA_PROVIDER_CONFIG_JSON: JSON.stringify({ key, model: 'test-model' }), COLOSSUS_ORIGIN: 'http://localhost:4002' };
 const input = { focus: 'Capacity', sources: [{ sourceId: 'measurement', sectionId: '1', text: 'Measured capacity is 20 units.', timestampMs: 1200 }] };
 const claim = { text: 'Capacity is 20 units.', quote: input.sources[0].text, sourceId: 'measurement', sectionId: '1', assessment: 'The source asserts a measurement.', nextCheck: 'Inspect measurement methods.', identity: 2, support: 1, reasoning: 1, importance: 4 };
 const completion = claims => ({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify({ claims }) } }], usage: { total_tokens: 20 } });
@@ -24,7 +24,7 @@ async function start(t, overrides = {}, fetcher = async () => Response.json(comp
 test('requires authorization and never forwards caller credentials or destinations', async t => {
   let calls = 0;
   const { call, logs } = await start(t, { COLOSSUS_API_KEYS_JSON: '["client-key"]', COLOSSUS_ADMIN_KEY: 'admin-key' }, async (url, options) => {
-    calls++; assert.equal(url, 'https://api.deepseek.com/chat/completions');
+    calls++; assert.equal(url, 'https://provider.example.test/v1/chat/completions');
     assert.equal(options.headers.Authorization, `Bearer ${key}`);
     const body = JSON.parse(options.body); assert.equal(body.model, 'test-model'); assert.equal(body.baseUrl, undefined);
     return Response.json(completion([claim]));

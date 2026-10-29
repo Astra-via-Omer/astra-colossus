@@ -49,7 +49,7 @@ test('editing a group preserves member IDs, organization, ordered models and det
 });
 
 test('form output changes the actual centrally assigned route and preserves scoped product authorization', async () => {
-  const config = configuration({ ASTRA_PROVIDER_CONFIG_JSON: '{"key":"synthetic-provider","model":"default-native"}', COLOSSUS_VAULT_SECRET: 'synthetic-local-vault-secret-of-32-characters' });
+  const config = configuration({ COLOSSUS_ROUTES_JSON: JSON.stringify({ 'astra-default': { baseUrl: 'https://provider.example.test/v1', model: 'default-native', capabilities: ['text'] } }), ASTRA_PROVIDER_CONFIG_JSON: '{"key":"synthetic-provider","model":"default-native"}', COLOSSUS_VAULT_SECRET: 'synthetic-local-vault-secret-of-32-characters' });
   const control = new ControlPlane(config, fetch, fetch), actor = { id: 'admin', email: 'admin@example.test' };
   const providerId = (await control.snapshot()).models[0].providerId;
   await control.save('models', { id: 'research', name: 'Research', providerId, model: 'research-native', maxTokens: 8000 }, actor);

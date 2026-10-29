@@ -1,10 +1,11 @@
 import { createHash, randomBytes, randomUUID, createCipheriv, createDecipheriv } from 'node:crypto';
-import { runtimeVertexRoute, requireApprovedProvider, isDeepSeek } from './vertex.mjs';
+import { runtimeVertexRoute, requireApprovedProvider } from './vertex.mjs';
 import { ControlStore } from './controlStore.mjs';
 import { endpointUrl } from './endpoints.mjs';
 import { fail, resolveRoute, validateChat } from './config.mjs';
 import { CHRISTOPHER, CHRISTOPHER_MODELS, christopherModel } from './christopher.mjs';
 import { isChristopherAdmin, requireChristopherAdmin } from './christopherFingerprint.mjs';
+import { ProviderAccess } from './providerAccess.mjs';
 
 const idPattern = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,119}$/;
 const id = value => { if (typeof value !== 'string' || !idPattern.test(value)) fail(400, 'invalid_id', 'Use a short ID containing letters, numbers, dots, underscores or hyphens.'); return value; };
@@ -12,6 +13,12 @@ const text = (value, max = 160) => { if (typeof value !== 'string' || !value.tri
 const nonnegative = (value, maximum = 1000000) => typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= maximum;
 const now = () => new Date().toISOString();
 const digest = value => createHash('sha256').update(value).digest('hex');
+const providerKind = (config, provider) => {
+  const managed = provider.envAlias ? config.routes[provider.envAlias] : null;
+  // Older seeds stored every managed connection as compatible. Retain a
+  // configured DeepSeek classification while it still describes this endpoint.
+  return provider.kind === 'deepseek' || (managed?.providerKind === 'deepseek' && managed.baseUrl === provider.baseUrl) ? 'deepseek' : provider.kind;
+};
 const publicRecord = value => {
   const { credential, hash, envAlias, ...visible } = value;
   return { ...visible, ...(Object.hasOwn(value, 'credential') || envAlias ? { credentialConfigured: !!credential || !!envAlias || value.native === 'vertex-media', credentialSource: value.native === 'vertex-media' ? 'runtime' : envAlias && !credential ? 'managed' : credential ? 'vault' : 'none' } : {}) };
@@ -31,6 +38,7 @@ export class ControlPlane {
   constructor(config, fetcher, endpointFetcher, store) {
     this.config = config; this.store = store || new ControlStore(config, fetcher); this.fetch = endpointFetcher;
     this.enabled = this.store.shared || !config.production; this.ready = null;
+    this.providerAccess = new ProviderAccess(this);
     this.vaultKey = createHash('sha256').update('astra-colossus/vault/v1\0').update(config.vaultSecret || config.sessionSecret).digest();
   }
   async ensure() {
@@ -42,7 +50,7 @@ export class ControlPlane {
     const seeds = systemSeeds.map(([name, label, url, description]) => ['systems/' + name, { id: name, name: label, url, description, enabled: true, monthlyBudgetUsd: null, requestsPerMinute: 120, createdAt: now(), updatedAt: now() }]);
     for (const [alias, route] of Object.entries(this.config.routes)) {
       const providerId = 'managed-' + digest(alias).slice(0, 12);
-      seeds.push(['providers/' + providerId, { id: providerId, name: new URL(route.baseUrl).hostname === 'api.deepseek.com' ? 'DeepSeek' : 'Managed provider', kind: 'compatible', protocol: route.protocol || 'openai', baseUrl: route.baseUrl, enabled: true, envAlias: alias, credential: null, allowAnonymous: false, health: null, createdAt: now(), updatedAt: now() }]);
+      seeds.push(['providers/' + providerId, { id: providerId, name: route.providerKind === 'deepseek' || new URL(route.baseUrl).hostname === 'api.deepseek.com' ? 'DeepSeek' : 'Managed provider', kind: route.providerKind || route.kind || 'compatible', protocol: route.protocol || 'openai', baseUrl: route.baseUrl, enabled: true, envAlias: alias, credential: null, allowAnonymous: false, health: null, createdAt: now(), updatedAt: now() }]);
       seeds.push(['models/' + alias, { id: alias, name: alias === 'astra-default' ? 'Astra Default' : alias, providerId, model: route.model, capabilities: route.capabilities, task: 'chat', maxTokens: 4000, pricing: route.pricing || null, enabled: true, createdAt: now(), updatedAt: now() }]);
     }
     if (this.config.freeGroupId) seeds.push(['groups/' + id(this.config.freeGroupId), { id: this.config.freeGroupId, name: 'Free Workspace PDF checking', enabled: true, modelIds: ['astra-default'], memberIds: [], organizationId: null, activityModels: {}, createdAt: now(), updatedAt: now() }]);
@@ -86,9 +94,9 @@ export class ControlPlane {
   async personalProviders(actor, userId = actor.id) {
     if (actor.kind !== 'account' || typeof userId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(userId) || (userId !== actor.id && !actor.admin))
       fail(403, 'provider_access_denied', 'Only your own provider settings or an administrator-managed account can be viewed.');
-    await this.ensure();
-    const record = (await this.store.get('personalProviders/' + userId)).data;
-    return { userId, deepseekEnabled: record?.deepseekEnabled === true, updatedAt: record?.updatedAt || null };
+    const [record, settings] = await Promise.all([this.providerAccess.user(userId), this.providerAccess.settings()]);
+    return { userId, deepseekEnabled: record.deepseek, googleEnabled: record.google, deepseekGloballyEnabled: settings.deepseekEnabled,
+      effectiveDeepseekEnabled: record.deepseek && settings.deepseekEnabled, updatedAt: record.updatedAt };
   }
   async savePersonalProviders(actor, body) {
     const userId = body?.userId || actor.id;
@@ -96,17 +104,14 @@ export class ControlPlane {
     if (!actor.admin) fail(403, 'admin_required', 'An administrator must enable an external provider for this person.');
     if (typeof body?.deepseekEnabled !== 'boolean' || Object.keys(body).some(key => !['userId', 'deepseekEnabled'].includes(key)))
       fail(400, 'invalid_provider_access', 'Choose one person and a DeepSeek enabled state.');
-    await this.audit(actor, body.deepseekEnabled ? 'personal_deepseek_enabled' : 'personal_deepseek_disabled', 'personalProviders', userId);
-    await this.store.mutate(['personalProviders/' + userId], () => [{ userId, deepseekEnabled: body.deepseekEnabled,
-      updatedAt: now(), updatedBy: actor.id, policyVersion: 'deepseek-personal-v1' }]);
+    const current = await this.providerAccess.user(userId);
+    await this.providerAccess.saveUser(userId, { google: current.google, deepseek: body.deepseekEnabled, expectedUpdatedAt: current.updatedAt }, actor);
     return this.personalProviders(actor, userId);
   }
   async assertProviderAccess(identity, route) {
-    if (!isDeepSeek(route) || !this.config.production || this.config.providerMigrationMode === 'prepare') return;
-    // Service keys alone and members of the same group never inherit a person's grant.
-    const allowed = identity.kind === 'account' && (await this.personalProviders(identity)).deepseekEnabled;
-    if (!allowed) fail(403, 'personal_provider_disabled', 'DeepSeek is disabled for this person. An administrator can enable it in Users & access.');
-    requireApprovedProvider(this.config, route, { personalDeepSeek: true });
+    const access = await this.providerAccess.authorize(identity, route);
+    requireApprovedProvider(this.config, route, { personalDeepSeek: access.deepseekApproved });
+    return access;
   }
   pricing(raw) {
     if (raw === null || raw === undefined) return null;
@@ -134,7 +139,7 @@ export class ControlPlane {
       const kind = body.kind ?? previous?.kind;
       if (!['openai', 'anthropic', 'deepseek', 'compatible', 'gpu'].includes(kind)) fail(400, 'invalid_provider', 'Choose a supported provider type.');
       const baseUrl = endpointUrl(body.baseUrl ?? previous?.baseUrl).href.replace(/\/$/, '');
-      if (base.enabled) requireApprovedProvider(this.config, {baseUrl}, { registration: true });
+      if (base.enabled) requireApprovedProvider(this.config, {baseUrl, providerKind: kind}, { registration: true });
       if (previous?.envAlias && baseUrl !== previous.baseUrl && !body.apiKey) fail(400, 'credential_binding', 'A managed credential cannot be sent to a different endpoint. Supply a separate key for a new endpoint.');
       value = { ...base, kind, protocol: kind === 'anthropic' ? 'anthropic' : 'openai', baseUrl,
         envAlias: previous?.envAlias || null, credential: body.apiKey ? this.seal(recordId, body.apiKey) : previous?.credential || null,
@@ -145,7 +150,7 @@ export class ControlPlane {
         fail(409, 'release_immutable', 'Publish a new Lab version to change its serving definition.');
       const providerId = id(body.providerId ?? previous?.providerId), provider = (await this.store.get('providers/' + providerId)).data;
       if (!provider || provider.native) fail(400, 'provider_required', 'Choose a compatible or Anthropic connection. Native adapters use their dedicated model route.');
-      if (base.enabled) requireApprovedProvider(this.config, provider, { registration: true });
+      if (base.enabled) requireApprovedProvider(this.config, { ...provider, providerKind: providerKind(this.config, provider) }, { registration: true });
       const capabilities = body.capabilities ?? previous?.capabilities ?? ['text'];
       if (!Array.isArray(capabilities) || !capabilities.length || capabilities.some(item => !['text', 'image', 'audio', 'video'].includes(item)) ||
           (provider.protocol === 'anthropic' && capabilities.some(item => !['text', 'image'].includes(item)))) fail(400, 'invalid_capabilities', 'Choose capabilities supported by this provider adapter.');
@@ -245,18 +250,28 @@ export class ControlPlane {
   }
   async assignedRoute(identity, body, task = 'chat', activity = '') {
     const { group, organizationId } = await this.groupAccess(identity);
-    if (!group) { const route = await this.route(body.model); return { ...route, routing: { groupId: null, organizationId, activity } }; }
+    if (!group) {
+      const route = await this.route(body.model, identity);
+      return { ...route, routing: { groupId: null, organizationId, activity } };
+    }
     // The client cannot choose outside (or override) its centrally assigned group.
     const specific = group.activityModels[activity] || group.activityModels[activity.split('.').slice(0, -1).join('.')];
     const candidates = specific ? [specific] : group.modelIds;
+    let providerDenial;
     for (const alias of candidates) {
       if (identity.allowedModels && !identity.allowedModels.includes(alias)) continue;
       let route;
-      try { route = await this.route(alias); } catch (error) { if (['route_paused', 'model_task'].includes(error.code)) continue; throw error; }
+      try { route = await this.route(alias, identity); }
+      catch (error) {
+        if (['provider_policy', 'provider_access_denied', 'provider_user_required'].includes(error.code)) { providerDenial = error; continue; }
+        if (['route_paused', 'model_task'].includes(error.code)) continue;
+        throw error;
+      }
       if ((route.task || 'chat') !== task || (body.max_tokens && body.max_tokens > route.maxTokens)) continue;
       if (task === 'chat') { try { validateChat(body, route); } catch (error) { if (error.code === 'unsupported_modality') continue; throw error; } }
       return { ...route, routing: { groupId: group.id, organizationId, activity } };
     }
+    if (providerDenial) fail(providerDenial.status, providerDenial.code, providerDenial.message);
     fail(503, 'group_model_unavailable', 'No granted model in your group can serve this request. Ask an administrator to check its routes, output limits and system key grants.');
   }
   async labCatalog(identity) {
@@ -296,8 +311,12 @@ export class ControlPlane {
     }
     return { model, replay: false };
   }
-  async route(model) {
-    if (!this.enabled) return resolveRoute(this.config, model);
+  async route(model, identity) {
+    if (!this.enabled) {
+      const route = resolveRoute(this.config, model);
+      if (identity) await this.assertProviderAccess(identity, route);
+      return { ...route, providerKind: route.providerKind || route.kind };
+    }
     await this.ensure();
     let alias = model || 'astra-default';
     if (alias === this.config.routes['astra-default']?.model) alias = 'astra-default';
@@ -307,23 +326,36 @@ export class ControlPlane {
     const provider = (await this.store.get('providers/' + registered.providerId)).data;
     if (!registered.enabled || !provider?.enabled) fail(503, 'route_paused', 'This model or provider connection is paused.');
     if (registered.native) fail(400, 'model_task', registered.native === 'christopher' ? 'Use /v1/christopher/evaluate for structured mathematical checks.' : 'Use the native /v1/media/observe endpoint for this route.');
+    if (identity) await this.assertProviderAccess(identity, { providerKind: providerKind(this.config, provider), baseUrl: provider.baseUrl, protocol: provider.protocol, native: provider.native });
     const key = this.credential(provider);
     const runtimeIdentity = runtimeVertexRoute(this.config, { protocol: provider.protocol, baseUrl: provider.baseUrl });
     if (!key && !provider.allowAnonymous && !runtimeIdentity) fail(503, 'provider_key_required', 'An administrator must add this provider credential.');
-    return { alias, model: registered.model, providerId: provider.id, providerName: provider.name, protocol: provider.protocol,
+    return { alias, model: registered.model, providerId: provider.id, providerName: provider.name, providerKind: providerKind(this.config, provider), native: provider.native, protocol: provider.protocol,
       baseUrl: provider.baseUrl, key, capabilities: registered.capabilities, pricing: registered.pricing, maxTokens: registered.maxTokens,
       task: registered.task, managed: !!provider.envAlias && !provider.credential && provider.baseUrl === this.config.routes[provider.envAlias]?.baseUrl, defaults: provider.envAlias ? this.config.routes[provider.envAlias]?.defaults : undefined };
   }
   async routes(identity) {
-    if (!this.enabled) return Object.entries(this.config.routes).map(([id, route]) => ({ id, model: route.model, capabilities: route.capabilities, task: 'chat' }));
+    if (!this.enabled) {
+      const visible = await Promise.all(Object.entries(this.config.routes).map(async ([id, route]) => {
+        try { await this.assertProviderAccess(identity, route); }
+        catch (error) { if (['provider_policy', 'provider_access_denied', 'provider_user_required'].includes(error.code)) return null; throw error; }
+        return { id, model: route.model, capabilities: route.capabilities, task: 'chat' };
+      }));
+      return visible.filter(Boolean);
+    }
     await this.ensure();
     const { group } = identity.admin ? { group: null } : await this.groupAccess(identity, false);
     if (this.config.requireGroups && identity.kind === 'account' && !identity.admin && !group) return [];
     const [models, providers] = await Promise.all([this.store.list('models'), this.store.list('providers')]);
-    const personalDeepSeek = !this.config.production || this.config.providerMigrationMode === 'prepare' ||
-      (identity.kind === 'account' && (await this.personalProviders(identity)).deepseekEnabled);
-    return models.filter(model => (model.native !== 'christopher' || isChristopherAdmin(identity)) && (!group || group.modelIds.includes(model.id)) && model.enabled && (!identity.allowedModels || identity.allowedModels.includes(model.id)) && providers.some(provider => provider.id === model.providerId && provider.enabled && (personalDeepSeek || !isDeepSeek(provider)) && (provider.credential || provider.envAlias || provider.allowAnonymous || provider.native)))
-      .map(model => ({ id: model.id, model: model.model, capabilities: model.capabilities, task: model.task, providerId: model.providerId }));
+    const available = models.filter(model => (model.native !== 'christopher' || isChristopherAdmin(identity)) && (!group || group.modelIds.includes(model.id)) && model.enabled && (!identity.allowedModels || identity.allowedModels.includes(model.id)) && providers.some(provider => provider.id === model.providerId && provider.enabled && (provider.credential || provider.envAlias || provider.allowAnonymous || provider.native)));
+    const visible = await Promise.all(available.map(async model => {
+      const provider = providers.find(value => value.id === model.providerId);
+      const accessRoute = model.id === 'broadcast-media' ? { native: 'vertex-media' } : { ...provider, providerKind: providerKind(this.config, provider) };
+      try { await this.assertProviderAccess(identity, accessRoute); }
+      catch (error) { if (['provider_policy', 'provider_access_denied', 'provider_user_required'].includes(error.code)) return null; throw error; }
+      return { id: model.id, model: model.model, capabilities: model.capabilities, task: model.task, providerId: model.providerId };
+    }));
+    return visible.filter(Boolean);
   }
   async authenticateKey(token) {
     if (!/^cs_[a-f0-9]{64}$/.test(token || '')) return null;
@@ -386,6 +418,7 @@ export class ControlPlane {
     const { group } = await this.groupAccess(identity);
     if (group && !group.modelIds.includes('broadcast-media')) fail(403, 'model_not_granted', 'Your group is not assigned the broadcast observation model.');
     await this.authorize(identity, 'broadcast-media');
+    const providerRoute = { providerId: 'managed-vertex-media', providerKind: 'vertex', native: 'vertex-media', protocol: 'vertex', baseUrl: 'https://aiplatform.googleapis.com' };
     if (this.enabled) {
       await this.ensure();
       const model = (await this.store.get('models/broadcast-media')).data;
@@ -394,11 +427,13 @@ export class ControlPlane {
       const system = (await this.store.get('systems/' + (identity.systemId || (identity.kind === 'account' ? 'shared' : 'legacy')))).data;
       if (!system?.enabled) fail(403, 'system_paused', 'This system is paused in Colossus.');
     }
+    await this.assertProviderAccess(identity, providerRoute);
     // Reserve at the most expensive input modality; actual settlement uses mediaCostUsd.
-    return { alias: 'broadcast-media', model: this.config.media?.model, providerId: 'managed-vertex-media', task: 'observation', maxTokens: 1400,
+    return { ...providerRoute, alias: 'broadcast-media', model: this.config.media?.model, task: 'observation', maxTokens: 1400,
       pricing: this.config.media?.model === 'gemini-3.1-flash-lite' ? { inputPerMillion: 0.90, cachedInputPerMillion: 0.90, outputPerMillion: 2.70 } : null };
   }
   async reserve(identity, route, request, requestId, callIndex, inputTokens) {
+    await this.assertProviderAccess(identity, route);
     if (!this.enabled) return null;
     await this.ensure(); await this.authorize(identity, route.alias);
     const systemId = identity.systemId || (identity.kind === 'account' ? 'shared' : 'legacy');
@@ -468,7 +503,7 @@ export class ControlPlane {
   async checkConnection(collection, recordId, actor) {
     await this.ensure(); const path = collection + '/' + id(recordId), record = (await this.store.get(path)).data;
     if (!record || !['providers', 'integrations'].includes(collection)) fail(404, 'connection_not_found', 'Choose a registered connection.');
-    if (collection === 'providers') { await this.assertProviderAccess(actor, record); requireApprovedProvider(this.config, record, { personalDeepSeek: isDeepSeek(record) }); }
+    if (collection === 'providers') await this.assertProviderAccess(actor, { ...record, providerKind: providerKind(this.config, record) });
     if (record.native || record.protocol === 'vertex-openai') fail(409, 'native_connection', 'Native Vertex calls use runtime identity and their own token-count preflight. No compatible model-discovery check is available.');
     if (collection === 'integrations' && !['rest', 'training'].includes(record.kind)) fail(409, 'storage_agent_required', 'Bucket connections are registered for your ingestion worker. This gateway does not ingest or copy data automatically.');
     const start = Date.now(), key = this.credential(record), headers = {};
@@ -497,10 +532,10 @@ export class ControlPlane {
   }
   async snapshot() {
     await this.ensure();
-    const [providers, models, systems, keys, integrations, jobs, wallets, groups, audit] = await Promise.all(['providers', 'models', 'systems', 'keys', 'integrations', 'jobs', 'wallets', 'groups'].map(name => this.store.list(name)).concat(this.store.list('audit', 50, true)));
+    const [providers, models, systems, keys, integrations, jobs, wallets, groups, audit, providerSettings] = await Promise.all(['providers', 'models', 'systems', 'keys', 'integrations', 'jobs', 'wallets', 'groups'].map(name => this.store.list(name)).concat(this.store.list('audit', 50, true), this.providerAccess.settings()));
     const month = now().slice(0, 7);
     return { storage: this.store.shared ? 'firestore' : 'preview_memory', generatedAt: now(), providers: providers.map(publicRecord), models,
       systems: systems.map(system => ({ ...system, spending: wallets.find(wallet => wallet.systemId === system.id && wallet.month === month) || null })),
-      keys: keys.map(publicRecord), integrations: integrations.map(publicRecord), jobs, groups, audit, gateway: { origin: this.config.origin, legacyKeys: this.config.keys.length, protocols: ['openai-chat', 'anthropic-messages-adapter', 'openai-embeddings'], adminOnly: true } };
+      keys: keys.map(publicRecord), integrations: integrations.map(publicRecord), jobs, groups, audit, providerSettings, gateway: { origin: this.config.origin, legacyKeys: this.config.keys.length, protocols: ['openai-chat', 'anthropic-messages-adapter', 'openai-embeddings'], adminOnly: true } };
   }
 }

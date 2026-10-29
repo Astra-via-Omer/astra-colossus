@@ -7,7 +7,7 @@ import { tokenUsage, tokenCost, UsageMonitor, UsageStream } from '../src/usage.m
 import { Readable } from 'node:stream';
 
 const adminId = '11111111-1111-1111-1111-111111111111', memberId = '22222222-2222-2222-2222-222222222222';
-const baseEnv = { COLOSSUS_REQUIRE_GROUPS: 'false', ASTRA_PROVIDER_CONFIG_JSON: '{"key":"private-provider-key","model":"synthetic-model"}', SUPABASE_URL: 'https://auth.example', SUPABASE_ANON_KEY: 'public-key', COLOSSUS_ORIGIN: 'http://localhost:4002', COLOSSUS_PRICING_JSON: '{"astra-default":{"inputPerMillion":2,"cachedInputPerMillion":0.5,"outputPerMillion":4}}' };
+const baseEnv = { COLOSSUS_ROUTES_JSON: JSON.stringify({ 'astra-default': { baseUrl: 'https://provider.example.test/v1', model: 'synthetic-model', capabilities: ['text'] } }), COLOSSUS_REQUIRE_GROUPS: 'false', ASTRA_PROVIDER_CONFIG_JSON: '{"key":"private-provider-key","model":"synthetic-model"}', SUPABASE_URL: 'https://auth.example', SUPABASE_ANON_KEY: 'public-key', COLOSSUS_ORIGIN: 'http://localhost:4002', COLOSSUS_PRICING_JSON: '{"astra-default":{"inputPerMillion":2,"cachedInputPerMillion":0.5,"outputPerMillion":4}}' };
 const usage = { prompt_tokens: 1000, completion_tokens: 200, total_tokens: 1200, prompt_tokens_details: { cached_tokens: 400 }, completion_tokens_details: { reasoning_tokens: 60 } };
 const input = { focus: 'Check capacity', sources: [{ sourceId: 'source', sectionId: '1', text: 'Capacity is 20 units.' }] };
 const claim = { sourceId: 'source', sectionId: '1', text: 'Capacity is 20 units.', quote: 'Capacity is 20 units.', assessment: 'An assertion.', nextCheck: 'Check the measurement.', identity: 2, support: 1, reasoning: 1, importance: 3 };

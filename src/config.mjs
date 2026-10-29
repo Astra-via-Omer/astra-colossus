@@ -27,6 +27,12 @@ export function configuration(env = process.env) {
   }));
   if (!routes || typeof routes !== 'object' || Array.isArray(routes) || !Object.keys(routes).length) throw Error('Invalid model routes');
   for (const [id, route] of Object.entries(routes)) {
+    if (!route || typeof route !== 'object' || Array.isArray(route)) throw Error('Invalid model route');
+    const providerKinds = ['openai', 'anthropic', 'deepseek', 'compatible', 'gpu'];
+    if ((route.providerKind !== undefined && !providerKinds.includes(route.providerKind)) ||
+        (route.kind !== undefined && !providerKinds.includes(route.kind)) ||
+        (route.providerKind !== undefined && route.kind !== undefined && route.providerKind !== route.kind)) throw Error('Invalid route provider kind');
+    route.providerKind = route.providerKind ?? route.kind ?? 'compatible';
     const url = new URL(route.baseUrl);
     if (!/^[a-zA-Z0-9._:-]{1,120}$/.test(id) || url.username || url.password || url.search || url.hash ||
       (url.protocol !== 'https:' && !(env.NODE_ENV !== 'production' && url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)))) throw Error('Invalid provider route URL');

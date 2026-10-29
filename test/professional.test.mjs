@@ -21,7 +21,7 @@ async function start(t) {
     state.providerCalls++;
     return Response.json({ choices: [{ message: { content: 'Synthetic assessment' }, finish_reason: 'stop' }], usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } });
   };
-  const app = createService(configuration({ COLOSSUS_REQUIRE_GROUPS: 'true', COLOSSUS_ORIGIN: origin,
+  const app = createService(configuration({ COLOSSUS_ROUTES_JSON: JSON.stringify({ 'astra-default': { baseUrl: 'https://provider.example.test/v1', model: 'synthetic-model', capabilities: ['text'] } }), COLOSSUS_REQUIRE_GROUPS: 'true', COLOSSUS_ORIGIN: origin,
     SUPABASE_URL: 'https://auth.example', SUPABASE_ANON_KEY: 'synthetic-public-key',
     ASTRA_PROVIDER_CONFIG_JSON: '{"key":"synthetic-provider-key","model":"synthetic-model"}',
     COLOSSUS_VAULT_SECRET: 'synthetic-professional-vault-secret-at-least-32-characters' }), { fetcher, logger: () => {} });

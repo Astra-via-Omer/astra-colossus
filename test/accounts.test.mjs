@@ -5,7 +5,7 @@ import { createService } from '../src/server.mjs';
 import { Sessions } from '../src/sessions.mjs';
 
 const origin = 'http://localhost:4003';
-const settings = { COLOSSUS_REQUIRE_GROUPS: 'false', ASTRA_PROVIDER_CONFIG_JSON: '{"key":"synthetic-machine-key","model":"synthetic-model"}', SUPABASE_URL: 'https://auth.example', SUPABASE_ANON_KEY: 'public-test-key', COLOSSUS_ORIGIN: origin };
+const settings = { COLOSSUS_ROUTES_JSON: JSON.stringify({ 'astra-default': { baseUrl: 'https://provider.example.test/v1', model: 'synthetic-model', capabilities: ['text'] } }), COLOSSUS_REQUIRE_GROUPS: 'false', ASTRA_PROVIDER_CONFIG_JSON: '{"key":"synthetic-machine-key","model":"synthetic-model"}', SUPABASE_URL: 'https://auth.example', SUPABASE_ANON_KEY: 'public-test-key', COLOSSUS_ORIGIN: origin };
 const adminId = '11111111-1111-1111-1111-111111111111', otherId = '22222222-2222-2222-2222-222222222222';
 async function start(t, extra = {}) {
   const user = { id: adminId, email: 'admin@example.com', app_metadata: { role: 'admin' }, user_metadata: { name: 'Test admin' } };
@@ -35,7 +35,7 @@ async function start(t, extra = {}) {
       assert.equal(options.headers.apikey, 'public-test-key');
       return Response.json(url.endsWith('astra_list_users_v2') ? [{ user_id: otherId, email: 'reader@example.com', app_role: 'reader', account_status: 'Active', last_sign_in_at: null, raw_app_meta_data: { private: 'must-not-leak' } }] : null, { status: state.rpcStatus });
     }
-    if (url === 'https://api.deepseek.com/chat/completions') {
+    if (url === 'https://provider.example.test/v1/chat/completions') {
       assert.equal(options.headers.Authorization, 'Bearer synthetic-machine-key');
       return Response.json({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify({ claims: [{ text: 'Capacity is 20 units.', quote: 'Measured capacity is 20 units.', sourceId: 'measurement', sectionId: '1', assessment: 'A measurement is asserted.', nextCheck: 'Check the methods.', identity: 2, support: 1, reasoning: 1, importance: 4 }] }) } }], usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } });
     }

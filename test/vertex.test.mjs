@@ -52,15 +52,16 @@ test('the real gateway uses short-lived runtime OAuth only at the approved EU en
 test('a stale restricted-provider registry route is denied before provider admission', async t => {
   let calls = 0;
   const app = await service(t, async url => { if (url.startsWith('http://metadata.google.internal/')) return Response.json({ access_token: 'synthetic-audit-oauth', expires_in: 3600 }); calls++; throw Error('Unexpected provider request'); }, config => { config.routes['astra-default'] = { ...config.routes['astra-default'], protocol: 'openai', baseUrl: 'https://api.deepseek.com', key: 'synthetic-retired-key' }; });
-  const response = await app.request(); assert.equal(response.status, 403); assert.equal(calls, 0);
-  const body = await response.text(); assert(body.includes('personal_provider_disabled')); assert(!body.includes('synthetic-retired-key'));
+  const response = await app.request(); assert.equal(response.status, 503); assert.equal(calls, 0);
+  const body = await response.text(); assert(body.includes('provider_policy')); assert(!body.includes('synthetic-retired-key'));
 });
 
-test('preparation is explicit and limited to the existing managed provider, and defaults back to strict', () => {
+test('migration preparation preserves credential binding but cannot bypass provider access', () => {
   const config = configuration({ ...env, ASTRA_PROVIDER_CONFIG_JSON: '{"key":"synthetic-retiring-key","model":"old-model"}', COLOSSUS_PROVIDER_MIGRATION_MODE: 'prepare' });
   const control = new ControlPlane(config, async () => { throw Error('Unexpected network call'); });
   const legacy = { baseUrl: 'https://api.deepseek.com', envAlias: 'astra-default' };
-  assert.doesNotThrow(() => requireApprovedProvider(config, legacy));
+  assert.throws(() => requireApprovedProvider(config, legacy), { code: 'provider_policy' });
+  assert.doesNotThrow(() => requireApprovedProvider(config, legacy, { personalDeepSeek: true }));
   assert.equal(control.credential(legacy), 'synthetic-retiring-key');
   assert.equal(control.credential({ ...legacy, baseUrl: 'https://other.example.invalid' }), '');
   config.providerMigrationMode = 'strict';

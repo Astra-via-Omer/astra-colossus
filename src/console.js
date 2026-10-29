@@ -1,6 +1,9 @@
 const $ = id => document.getElementById(id);
 let engines = [], lastResult, busy = false, permissions, account, accountVerified = false, signingOut = false;
 let authController = new AbortController(), userOffset = 0, userCount = 0, pendingChange, checkingAccount = false;
+let providerSettings, usersLoading = false, userAccessEpoch = 0, usersRequestVersion = 0;
+let engineAccessVersion = 0;
+let personalAccessVersion = 0;
 function controls() {
   const connected = !!account && accountVerified && ['admin', 'participant'].includes(account.role), admin = connected && account.role === 'admin' && !!permissions?.admin;
   document.body.dataset.consoleRole = connected ? account.role : 'checking';
@@ -17,12 +20,17 @@ function controls() {
   $('test-draft').disabled = busy || !admin; $('evaluate-button').disabled = busy || !admin;
   $('export').disabled = busy || !admin; $('download').disabled = busy || !connected || !lastResult;
   $('logout').disabled = signingOut; $('guide-sample-source').disabled = busy || !connected;
-  $('user-search').querySelector('button').disabled = busy || !admin;
-  $('users-previous').disabled = busy || !admin || userOffset === 0;
-  $('users-next').disabled = busy || !admin || userCount < 50;
+  const accessLocked = busy || usersLoading || !admin || signingOut;
+  $('user-search').querySelector('button').disabled = accessLocked;
+  $('users-previous').disabled = accessLocked || userOffset === 0;
+  $('users-next').disabled = accessLocked || userCount < 50;
   $('confirm-access-change').disabled = busy || !admin || !pendingChange;
   $('cancel-access-change').disabled = busy;
-  document.querySelectorAll('#user-rows button, #user-rows select').forEach(node => { node.disabled = busy || !admin || node.dataset.locked === 'true'; });
+  document.querySelectorAll('#user-rows button, #user-rows select, #user-rows input').forEach(node => { node.disabled = accessLocked || node.dataset.locked === 'true'; });
+  const providerDirty = !!providerSettings && $('deepseek-enabled').checked !== providerSettings.deepseekEnabled;
+  $('deepseek-enabled').disabled = accessLocked || !providerSettings;
+  $('save-provider-settings').disabled = accessLocked || !providerDirty;
+  $('cancel-provider-settings').disabled = accessLocked || !providerDirty;
 }
 async function api(path, body, method = body === undefined ? 'GET' : 'POST') {
   const response = await fetch(path, { method, credentials: 'same-origin', signal: authController.signal,
@@ -38,7 +46,7 @@ async function api(path, body, method = body === undefined ? 'GET' : 'POST') {
 function clearPrivateState() {
   account = undefined; accountVerified = false; permissions = undefined; engines = []; lastResult = undefined; pendingChange = undefined;
   $('run').reset(); $('create').reset(); $('cases').value = '';
-  $('engine').replaceChildren(); $('model').replaceChildren(); $('user-rows').replaceChildren();
+  $('engine').replaceChildren(); $('model').replaceChildren(); clearUserAccess();
   $('access-confirmation').hidden = true; $('result').textContent = 'Your result will appear here.';
   $('account-email').textContent = ''; $('account-role').textContent = ''; $('account-permissions').textContent = ''; $('account-expiry').textContent = '';
   $('greeting').textContent = 'Welcome back.';
@@ -52,6 +60,7 @@ function endSession(reason) {
 }
 function displayAccount(profile) {
   if (authController.signal.aborted) return;
+  if (account && (account.id !== profile.user.id || account.role !== profile.user.role)) clearUserAccess();
   account = profile.user; accountVerified = true;
   $('greeting').textContent = account.name ? `Welcome back, ${account.name}.` : 'Welcome back.';
   $('account-email').textContent = account.email;
@@ -80,17 +89,57 @@ function setEngineModels(routes) {
   $('model').replaceChildren(...chat.map(route => new Option(`${route.id} · ${route.model}`, route.id)));
   if (chat.some(route => route.id === selected)) $('model').value = selected;
 }
-document.addEventListener('colossus:catalog', event => { if (accountVerified) setEngineModels(event.detail); });
+async function refreshPersonalProviderAccess() {
+  if (!accountVerified || signingOut || authController.signal.aborted) return false;
+  const version = ++personalAccessVersion, epoch = userAccessEpoch, accountId = account?.id;
+  const current = () => version === personalAccessVersion && epoch === userAccessEpoch && accountId === account?.id
+    && accountVerified && !signingOut && !authController.signal.aborted;
+  $('personal-provider-status').textContent = 'Checking personal provider access…';
+  try {
+    const personal = await api('/v1/provider-access'); if (!current()) return false;
+    if (!['deepseekEnabled', 'googleEnabled', 'deepseekGloballyEnabled', 'effectiveDeepseekEnabled'].every(key => typeof personal[key] === 'boolean')) throw Error('The server did not return confirmed personal provider access.');
+    const deepseek = personal.deepseekEnabled
+      ? personal.deepseekGloballyEnabled && personal.effectiveDeepseekEnabled ? 'granted' : 'granted; globally disabled'
+      : personal.deepseekGloballyEnabled ? 'not granted' : 'not granted; globally disabled';
+    $('personal-provider-status').textContent = `Your provider access: Google ${personal.googleEnabled ? 'granted' : 'not granted'} · DeepSeek ${deepseek}. Group assignments and product API grants still apply.`;
+    return true;
+  } catch (error) {
+    if (!current()) return false;
+    $('personal-provider-status').textContent = `Personal provider access could not be verified: ${error.message}`; throw error;
+  }
+}
+async function refreshEngineAccess() {
+  if (!accountVerified || signingOut || authController.signal.aborted) return false;
+  const version = ++engineAccessVersion, epoch = userAccessEpoch, accountId = account?.id;
+  const current = () => version === engineAccessVersion && epoch === userAccessEpoch && accountId === account?.id
+    && accountVerified && !signingOut && !authController.signal.aborted;
+  setEngineModels([]); $('route-count').textContent = 'Checking…'; $('capabilities').textContent = 'Checking eligible model routes…';
+  try {
+    const capabilities = await api('/v1/capabilities'); if (!current()) return false;
+    if (!Array.isArray(capabilities.routes)) throw Error('Eligible model routes could not be verified.');
+    permissions = capabilities; setEngineModels(capabilities.routes);
+    $('route-count').textContent = String(capabilities.routes.length);
+    $('capabilities').textContent = capabilities.routes.map(route => `${route.id}: ${route.capabilities.join(', ')}`).join(' · ') + ' · Streaming responses: SSE.';
+    await refreshPersonalProviderAccess().catch(() => false); if (!current()) return false;
+    controls(); return true;
+  } catch (error) {
+    if (!current()) return false;
+    setEngineModels([]); $('route-count').textContent = 'Unavailable';
+    $('capabilities').textContent = 'Eligible model routes are unavailable. Refresh operations to retry.';
+    $('status').textContent = error.message; throw error;
+  }
+}
+document.addEventListener('colossus:catalog', () => { void refreshEngineAccess().catch(() => {}); });
 async function load() {
+  const epoch = userAccessEpoch, accountId = account?.id;
   const [profile, capabilities] = await Promise.all([api('/session'), api('/v1/capabilities')]);
-  permissions = capabilities;
-  const data = await api('/v1/engines'); engines = data.engines;
-  if (authController.signal.aborted) return;
+  const data = await api('/v1/engines');
+  if (authController.signal.aborted || signingOut || epoch !== userAccessEpoch || accountId !== account?.id) return;
+  permissions = capabilities; engines = data.engines;
   $('engine').replaceChildren(...engines.map((e, i) => new Option(`${e.name} · ${e.version}`, String(i))));
   setEngineModels(capabilities.routes);
   displayAccount(profile);
-  const personal = await api('/v1/provider-access');
-  $('personal-provider-status').textContent = 'DeepSeek for your account: ' + (personal.deepseekEnabled ? 'enabled' : 'disabled');
+  void refreshPersonalProviderAccess().catch(() => {});
   $('engine-count').textContent = String(engines.length);
   $('route-count').textContent = String(capabilities.routes.length);
   $('registry-state').textContent = capabilities.engineCreation ? 'Configured' : 'Not configured';
@@ -100,6 +149,7 @@ async function load() {
   $('capabilities').textContent = capabilities.routes.map(r => `${r.id}: ${r.capabilities.join(', ')}`).join(' · ') + ' · Streaming responses: SSE.';
   controls();
   void loadMonitoring();
+  if (capabilities.admin) void loadUsers().catch(() => {});
   document.dispatchEvent(new CustomEvent('colossus:ready', { detail: { user: account, capabilities } }));
 }
 async function checkAccount() {
@@ -108,18 +158,19 @@ async function checkAccount() {
   try {
     const profile = await api('/session'), previousRole = account?.role;
     if (authController.signal.aborted) return;
-    if (previousRole !== profile.user.role) {
+    const identityChanged = account?.id !== profile.user.id;
+    if (previousRole !== profile.user.role || identityChanged) {
       permissions = undefined; clearMonitoring();
       document.dispatchEvent(new Event('colossus:locked'));
-      $('user-rows').replaceChildren(); pendingChange = undefined; $('access-confirmation').hidden = true;
+      clearUserAccess(); pendingChange = undefined; $('access-confirmation').hidden = true;
     }
     displayAccount(profile); controls();
-    if (previousRole !== account.role) await load();
+    if (!wasVerified || previousRole !== account.role || identityChanged) await load();
     controls();
     if (!wasVerified) document.dispatchEvent(new CustomEvent('colossus:ready', { detail: { user: account, capabilities: permissions } }));
   } catch (error) {
     if (!authController.signal.aborted) {
-      accountVerified = false; $('user-rows').replaceChildren(); pendingChange = undefined; $('access-confirmation').hidden = true; controls();
+      accountVerified = false; clearUserAccess(); pendingChange = undefined; $('access-confirmation').hidden = true; controls();
       clearMonitoring();
       document.dispatchEvent(new Event('colossus:locked'));
       $('status').textContent = 'Account access could not be verified. Actions are paused until the shared account service responds.';
@@ -198,7 +249,7 @@ $('cases').value = JSON.stringify(sampleCases, null, 2);
 showGuideStep(0); $('guide-controls').hidden = false;
 if (location.hash === '#guide') $('guide').open = true;
 $('logout').addEventListener('click', async () => {
-  if (signingOut) return; signingOut = true; controls();
+  if (signingOut) return; signingOut = true; clearUserAccess(); controls();
   try { await api('/session', undefined, 'DELETE'); endSession('signedout'); }
   catch (error) { if (!authController.signal.aborted) $('status').textContent = 'Sign-out could not be confirmed. Try again before leaving this device.'; }
   finally { signingOut = false; controls(); }
@@ -211,12 +262,95 @@ $('evaluate').addEventListener('submit', e => { e.preventDefault(); void task(as
 $('download').addEventListener('click', () => download(lastResult, 'colossus-result.json'));
 function reviewChange(user, change) {
   pendingChange = { userId: user.id, ...change };
-  $('access-confirm-text').textContent = Object.hasOwn(change, 'deepseekEnabled')
-    ? `${change.deepseekEnabled ? 'Enable' : 'Disable'} DeepSeek for ${user.email} only? When an assigned DeepSeek model is selected, that person's submitted text is processed by DeepSeek. Group model defaults stay unchanged.`
-    : Object.hasOwn(change, 'role')
+  $('access-confirm-text').textContent = Object.hasOwn(change, 'role')
     ? `Change ${user.email} from ${user.role} to ${change.role}?`
     : `${change.disabled ? 'Suspend' : 'Enable'} the shared Astra account ${user.email}?`;
   $('access-confirmation').hidden = false; controls(); $('confirm-access-change').focus();
+}
+function clearUserAccess() {
+  userAccessEpoch++; usersRequestVersion++; engineAccessVersion++; personalAccessVersion++; usersLoading = false; userCount = 0; providerSettings = undefined;
+  $('user-rows').replaceChildren(); $('deepseek-enabled').checked = false;
+  setEngineModels([]); $('route-count').textContent = '—'; $('capabilities').textContent = 'Eligible model routes have not been checked.';
+  $('provider-settings-state').textContent = 'Current DeepSeek policy has not been checked.';
+  $('provider-settings-status').textContent = '';
+  $('personal-provider-status').textContent = 'Personal provider access has not been checked.';
+  $('user-access-status').textContent = 'Load users to check current access and provider settings.';
+}
+function userAccessContext() { return { epoch: userAccessEpoch, accountId: account?.id }; }
+function currentUserAccess(context) {
+  return context.epoch === userAccessEpoch && context.accountId === account?.id && accountVerified
+    && account?.role === 'admin' && permissions?.admin && !signingOut && !authController.signal.aborted;
+}
+function validProviderRevision(record) { return record && (record.updatedAt === null || typeof record.updatedAt === 'string'); }
+function validProviderSettings(record) { return validProviderRevision(record) && typeof record.deepseekEnabled === 'boolean'; }
+function validProviderAccess(record) { return validProviderRevision(record) && typeof record.google === 'boolean' && typeof record.deepseek === 'boolean'; }
+function renderProviderSettings(record) {
+  providerSettings = { ...record }; $('deepseek-enabled').checked = record.deepseekEnabled;
+  $('provider-settings-state').textContent = record.deepseekEnabled
+    ? 'Saved state: DeepSeek is globally enabled. Each user still needs a DeepSeek grant.'
+    : 'Saved state: DeepSeek is globally disabled. User grants can be prepared while it is off.';
+  $('provider-settings-status').textContent = ''; controls();
+}
+function resetProviderSettingsDraft() {
+  if (providerSettings) renderProviderSettings(providerSettings);
+}
+function providerAccessCell(user) {
+  const cell = document.createElement('td'); cell.className = 'user-provider-access';
+  const available = validProviderAccess(user.providerAccess);
+  let saved = available ? { ...user.providerAccess } : undefined;
+  const inputs = {}, notes = {};
+  for (const [key, name] of [['google', 'Google'], ['deepseek', 'DeepSeek']]) {
+    const label = document.createElement('label'), input = document.createElement('input');
+    const text = document.createElement('span'), note = document.createElement('small');
+    label.className = 'provider-access-check'; input.type = 'checkbox'; input.checked = available && saved[key];
+    note.id = `provider-${key}-${encodeURIComponent(user.id)}`;
+    input.setAttribute('aria-label', `${name} access for ${user.email}`); input.setAttribute('aria-describedby', note.id); input.dataset.locked = String(!available);
+    text.textContent = name; text.append(note); label.append(input, text); cell.append(label);
+    inputs[key] = input; notes[key] = note;
+  }
+  const buttons = document.createElement('div'), save = document.createElement('button'), cancel = document.createElement('button');
+  buttons.className = 'actions'; save.type = cancel.type = 'button'; save.className = cancel.className = 'secondary';
+  save.textContent = 'Save access'; cancel.textContent = 'Cancel';
+  save.setAttribute('aria-label', `Save provider access for ${user.email}`); cancel.setAttribute('aria-label', `Cancel provider changes for ${user.email}`);
+  const status = document.createElement('p'); status.className = 'provider-access-status'; status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite');
+  const reset = record => {
+    saved = record;
+    for (const key of ['google', 'deepseek']) {
+      inputs[key].checked = !!saved?.[key];
+      notes[key].textContent = !saved ? 'Unavailable' : !saved[key] ? 'Saved: not granted'
+        : key === 'deepseek' && !providerSettings?.deepseekEnabled ? 'Saved: granted; globally disabled' : 'Saved: granted';
+    }
+    save.dataset.locked = cancel.dataset.locked = 'true';
+    status.textContent = saved ? '' : 'Provider access could not be verified. Load users again.'; controls();
+  };
+  for (const input of Object.values(inputs)) input.addEventListener('change', () => {
+    const dirty = !!saved && (inputs.google.checked !== saved.google || inputs.deepseek.checked !== saved.deepseek);
+    save.dataset.locked = cancel.dataset.locked = String(!dirty);
+    status.textContent = dirty ? 'Unsaved changes. Saved grants remain in effect.' : ''; controls();
+  });
+  cancel.addEventListener('click', () => reset(saved));
+  save.addEventListener('click', () => { void task(async () => {
+    const context = userAccessContext(); if (!currentUserAccess(context) || !saved) return;
+    const body = { google: inputs.google.checked, deepseek: inputs.deepseek.checked, expectedUpdatedAt: saved.updatedAt };
+    status.textContent = 'Saving provider access…'; let confirmed = false;
+    try {
+      const result = await api(`/v1/control/provider-access/${encodeURIComponent(user.id)}`, body);
+      if (!currentUserAccess(context)) return;
+      if (!validProviderAccess(result.record)) throw Error('The server did not return confirmed provider access.');
+      confirmed = true; reset({ ...result.record });
+      if (!await loadUsers() || !currentUserAccess(context)) return;
+      await refreshEngineAccess();
+      if (currentUserAccess(context)) $('user-access-status').textContent = `Provider access saved for ${user.email}. Group assignments and shared role are unchanged.`;
+    } catch (error) {
+      if (!currentUserAccess(context)) return;
+      if (!confirmed) { reset(saved); try { await loadUsers(); await refreshEngineAccess(); } catch {} }
+      if (!currentUserAccess(context)) return;
+      const message = confirmed ? `Provider access was saved, but current access could not be refreshed: ${error.message}`
+        : `Provider access save could not be confirmed: ${error.message}`;
+      $('user-access-status').textContent = message; throw Error(message);
+    }
+  }); });
+  buttons.append(save, cancel); cell.append(buttons, status); reset(saved); return cell;
 }
 function renderUsers(users) {
   $('user-rows').replaceChildren();
@@ -232,35 +366,67 @@ function renderUsers(users) {
     const toggle = document.createElement('button'); toggle.type = 'button'; toggle.textContent = user.status === 'Suspended' ? 'Enable' : 'Suspend'; toggle.className = 'secondary';
     toggle.dataset.locked = String(user.current || (user.role === 'admin' && user.status !== 'Suspended') || user.status === 'Unconfirmed');
     toggle.addEventListener('click', () => reviewChange(user, { disabled: user.status !== 'Suspended' }));
-    const provider = document.createElement('td'), deepseek = document.createElement('button');
-    deepseek.type = 'button'; deepseek.className = 'secondary'; deepseek.textContent = user.deepseekEnabled ? 'DeepSeek enabled · Disable' : 'Enable DeepSeek';
-    deepseek.setAttribute('aria-label', `${user.deepseekEnabled ? 'Disable' : 'Enable'} DeepSeek for ${user.email}`);
-    deepseek.setAttribute('aria-pressed', String(!!user.deepseekEnabled));
-    deepseek.addEventListener('click', () => reviewChange(user, { deepseekEnabled: !user.deepseekEnabled })); provider.append(deepseek);
-    actions.className = 'actions'; actions.append(save, toggle); row.append(email, role, state, provider, actions); $('user-rows').append(row);
+    actions.className = 'actions'; actions.append(save, toggle); row.append(email, role, state, providerAccessCell(user), actions); $('user-rows').append(row);
   }
   controls();
 }
 async function loadUsers() {
+  const context = userAccessContext(); if (!currentUserAccess(context)) return false;
+  const version = ++usersRequestVersion, offset = userOffset, search = $('user-query').value;
+  usersLoading = true; providerSettings = undefined; userCount = 0; pendingChange = undefined;
+  $('user-rows').replaceChildren(); $('access-confirmation').hidden = true; $('deepseek-enabled').checked = false;
+  $('provider-settings-state').textContent = 'Checking the current DeepSeek policy…'; $('provider-settings-status').textContent = '';
   $('user-access-status').textContent = 'Checking shared Astra users…';
+  controls();
   try {
-    const result = await api(`/v1/access/users?search=${encodeURIComponent($('user-query').value)}&offset=${userOffset}`);
-    if (authController.signal.aborted || !accountVerified || account?.role !== 'admin') return;
-    userCount = result.users.length; renderUsers(result.users);
-    $('user-access-status').textContent = userCount ? `Showing users ${userOffset + 1}–${userOffset + userCount}. Changes affect the shared Astra account.` : 'No matching accounts.';
-  } catch (error) { $('user-rows').replaceChildren(); userCount = 0; $('user-access-status').textContent = error.message; throw error; }
+    const result = await api(`/v1/access/users?search=${encodeURIComponent(search)}&offset=${offset}`);
+    if (!currentUserAccess(context) || version !== usersRequestVersion) return false;
+    if (!Array.isArray(result.users) || !validProviderSettings(result.providerSettings)) throw Error('Current provider settings could not be verified. Load users again.');
+    renderProviderSettings(result.providerSettings); userCount = result.users.length; renderUsers(result.users);
+    $('user-access-status').textContent = userCount ? `Showing users ${offset + 1}–${offset + userCount}. Provider grants apply to Colossus; role and state affect the shared Astra account.` : 'No matching accounts. Global provider settings are current.';
+    return true;
+  } catch (error) {
+    if (!currentUserAccess(context) || version !== usersRequestVersion) return false;
+    $('user-rows').replaceChildren(); userCount = 0; providerSettings = undefined; $('deepseek-enabled').checked = false;
+    $('provider-settings-state').textContent = 'Current DeepSeek policy is unavailable. Load users to retry.';
+    $('provider-settings-status').textContent = error.message; $('user-access-status').textContent = error.message; throw error;
+  } finally { if (version === usersRequestVersion && currentUserAccess(context)) { usersLoading = false; controls(); } }
 }
+$('deepseek-enabled').addEventListener('change', () => {
+  $('provider-settings-status').textContent = providerSettings && $('deepseek-enabled').checked !== providerSettings.deepseekEnabled
+    ? `Unsaved change. DeepSeek remains globally ${providerSettings.deepseekEnabled ? 'enabled' : 'disabled'} until saved.` : '';
+  controls();
+});
+$('cancel-provider-settings').addEventListener('click', resetProviderSettingsDraft);
+$('provider-settings').addEventListener('submit', event => { event.preventDefault(); void task(async () => {
+  const context = userAccessContext(); if (!currentUserAccess(context) || !providerSettings) return;
+  const body = { deepseekEnabled: $('deepseek-enabled').checked, expectedUpdatedAt: providerSettings.updatedAt };
+  $('provider-settings-status').textContent = 'Saving the global DeepSeek setting…'; let confirmed = false;
+  try {
+    const result = await api('/v1/control/provider-settings', body);
+    if (!currentUserAccess(context)) return;
+    if (!validProviderSettings(result.record)) throw Error('The server did not return confirmed provider settings.');
+    confirmed = true; renderProviderSettings(result.record);
+    if (!await loadUsers() || !currentUserAccess(context)) return;
+    await refreshEngineAccess();
+    if (currentUserAccess(context)) $('provider-settings-status').textContent = 'Global DeepSeek setting saved. User grants and group assignments are unchanged.';
+  } catch (error) {
+    if (!currentUserAccess(context)) return;
+    if (!confirmed) { resetProviderSettingsDraft(); try { await loadUsers(); await refreshEngineAccess(); } catch {} }
+    if (!currentUserAccess(context)) return;
+    const message = confirmed ? `The DeepSeek setting was saved, but current access could not be refreshed: ${error.message}`
+      : `The DeepSeek setting save could not be confirmed: ${error.message}`;
+    $('provider-settings-status').textContent = message; $('user-access-status').textContent = message; throw Error(message);
+  }
+}); });
 $('user-search').addEventListener('submit', event => { event.preventDefault(); userOffset = 0; void task(loadUsers); });
 $('users-previous').addEventListener('click', () => { userOffset = Math.max(0, userOffset - 50); void task(loadUsers); });
 $('users-next').addEventListener('click', () => { userOffset += 50; void task(loadUsers); });
 $('cancel-access-change').addEventListener('click', () => { pendingChange = undefined; $('access-confirmation').hidden = true; controls(); });
 $('confirm-access-change').addEventListener('click', () => { void task(async () => {
   const change = pendingChange; if (!change) return;
-  const providerChange = Object.hasOwn(change, 'deepseekEnabled');
-  await api(providerChange ? '/v1/provider-access' : '/v1/access/users', change, 'PATCH'); pendingChange = undefined; $('access-confirmation').hidden = true;
-  await loadUsers();
-  if (providerChange) { const personal = await api('/v1/provider-access'); $('personal-provider-status').textContent = 'DeepSeek for your account: ' + (personal.deepseekEnabled ? 'enabled' : 'disabled'); }
-  $('user-access-status').textContent = providerChange ? 'Personal DeepSeek access updated. Each inference checks it again. Enable the provider and model in Models, then assign the model in User groups. Existing group and product key grants still apply.' : 'Shared account updated. Access is checked again on each protected request.';
+  await api('/v1/access/users', change, 'PATCH'); pendingChange = undefined; $('access-confirmation').hidden = true;
+  await loadUsers(); $('user-access-status').textContent = 'Shared account updated. Access is checked again on each protected request.';
 }); });
 controls();
 load().then(() => { $('status').textContent = 'Your Astra account is connected.'; }).catch(error => {

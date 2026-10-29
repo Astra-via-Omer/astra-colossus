@@ -248,18 +248,55 @@ and the new dedicated session secret. This mode is temporary: switch all active
 registry models and their group/key assignments atomically, verify synthetic
 product calls, then set the deployment variable and runtime mode to `strict`.
 Strict is the default and CI removes the legacy provider secret mount. DeepSeek
-inference and connection checks require an explicit, audited per-person grant in
-**Users & access**. Every account starts disabled, including administrators;
-another group member or a service key alone never inherits the grant. Revocation
-is checked on the next request across gateway instances. Metadata registration
-does not send evidence and may enable the official `https://api.deepseek.com`
-connection (optionally `/v1`); other DeepSeek hosts remain blocked. Existing
+requires both the global switch and an explicit per-person grant in **Users &
+access**, including during migration preparation. The global switch starts off.
+A service-only key never inherits a user's grant. Official
+`https://api.deepseek.com` connections (optionally `/v1`) may be registered without
+sending evidence; other DeepSeek hosts remain blocked in production. Existing
 encrypted vault credentials can be used without restoring the legacy mount.
-Provider/model availability, group assignments and product key scopes still
-apply. Enabling a person does not change any group's Gemini defaults. The
-browser-admin `GET/PATCH /v1/provider-access` API reads only the current person's
-setting unless the caller is an administrator, and writes require a same-origin
-administrator session. Preserve historical audit/usage records.
+Preserve historical audit/usage records.
+
+### Google and DeepSeek access by user
+
+In **Users & access**, administrators can save independent Google and DeepSeek
+grants for each account and change the global DeepSeek switch. Google is allowed
+by default. New accounts have no DeepSeek grant. Existing saved DeepSeek grants
+remain available for review, but the global switch remains off until explicitly
+enabled. Grants can be prepared while DeepSeek is disabled.
+
+Provider grants restrict the existing group, product key and license controls.
+Connect a DeepSeek provider with a dedicated credential in **Providers**, register
+and enable its model, grant that alias to the calling product key, and include it
+in the user's group. To route different users in one group, include both vendors
+in the group's model list and grant each user their intended vendor. The first
+permitted compatible route is used. When a user has both grants, order the group
+routes or set an activity rule to select a provider. An activity rule assigned to
+a forbidden provider is denied; provider failures never trigger a vendor switch.
+
+Google restrictions also cover regional runtime routes and native media. Checks
+use the current provider endpoint, type and adapter rather than model aliases or
+display names. Other provider families retain their existing group/key controls.
+Saving access does not enable paused models, create credentials, or change roles,
+group membership, product approvals or computation balances.
+
+The operations database stores the global switch at `providerPolicy/main` and
+per-user grants at `providerAccess/{verifiedUserId}`. When a new per-user record
+does not yet exist, its DeepSeek grant is read from the existing
+`personalProviders/{verifiedUserId}` record. The first edit creates the new
+record. Existing `GET/PATCH /v1/provider-access` clients use the same grant source
+and preserve the user's Google setting. The legacy `deepseekEnabled` field
+continues to report the grant; `effectiveDeepseekEnabled` additionally checks the
+global switch. Group, key and product permissions still apply.
+
+Every provider admission reads current access. Revocation stops subsequent calls
+within multi-call work; requests already sent to a provider may finish. Missing
+or invalid access storage denies execution. New administrator writes use
+`POST /v1/control/provider-settings` with `deepseekEnabled` and
+`expectedUpdatedAt`, or `POST /v1/control/provider-access/{userId}` with `google`,
+`deepseek` and `expectedUpdatedAt`. Use the timestamp returned by the server, or
+`null` when no new record exists. Stale and concurrent edits require a refresh.
+Writes require a same-origin, live administrator browser session. The paginated
+admin user directory returns current grants without exposing credentials.
 
 DeepSeek chat defaults to non-thinking mode unless the request explicitly enables
 thinking. Its JSON output adapter retains the engine schema in the instruction

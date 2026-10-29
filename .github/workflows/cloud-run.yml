@@ -29,7 +29,7 @@ jobs:
       - run: docker build -t "astra-colossus:$GITHUB_SHA" .
       - name: Smoke test the packaged runtime
         run: |
-          docker run --detach --name colossus-smoke --publish 127.0.0.1:4002:8080 --env COLOSSUS_ORIGIN=https://colossus.astra-via.com --env 'COLOSSUS_API_KEYS_JSON=["synthetic-ci-client-key"]' --env COLOSSUS_SESSION_SECRET=synthetic-ci-session-secret-with-32-characters --env 'ASTRA_PROVIDER_CONFIG_JSON={"key":"synthetic-ci-key","model":"synthetic-ci-model"}' "astra-colossus:$GITHUB_SHA"
+          docker run --detach --name colossus-smoke --publish 127.0.0.1:4002:8080 --env COLOSSUS_ORIGIN=https://colossus.astra-via.com --env 'COLOSSUS_ROUTES_JSON={"astra-default":{"baseUrl":"https://provider.example.invalid/v1","model":"synthetic-ci-model","capabilities":["text"]}}' --env 'COLOSSUS_API_KEYS_JSON=["synthetic-ci-client-key"]' --env COLOSSUS_SESSION_SECRET=synthetic-ci-session-secret-with-32-characters --env 'ASTRA_PROVIDER_CONFIG_JSON={"key":"synthetic-ci-key","model":"synthetic-ci-model"}' "astra-colossus:$GITHUB_SHA"
           trap 'docker logs colossus-smoke; docker rm --force colossus-smoke >/dev/null' EXIT
           curl --fail --retry 10 --retry-delay 1 --retry-all-errors http://127.0.0.1:4002/healthz
           curl --fail --silent http://127.0.0.1:4002/ | python3 -c 'import sys; page=sys.stdin.read(); assert "welcome-login" in page and "id=\"run\"" not in page'

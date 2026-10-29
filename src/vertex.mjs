@@ -1,4 +1,5 @@
 import { fail } from './config.mjs';
+import { providerFamily } from './providerAccess.mjs';
 
 export function vertexConfiguration(env) {
   if (!env.COLOSSUS_VERTEX_PROJECT) return null;
@@ -14,18 +15,15 @@ export function runtimeVertexRoute(config, route) {
   return true;
 }
 
-export const isDeepSeek = route => {
-  const host = new URL(route.baseUrl).hostname.toLowerCase();
-  return host === 'deepseek.com' || host.endsWith('.deepseek.com');
-};
+export const isDeepSeek = route => providerFamily(route) === 'deepseek';
 export function requireApprovedProvider(config, route, { personalDeepSeek = false, registration = false } = {}) {
-  const host = new URL(route.baseUrl).hostname.toLowerCase();
-  if (config.production && config.providerMigrationMode !== 'prepare' && (host === 'deepseek.com' || host.endsWith('.deepseek.com'))) {
-    // Registry metadata does not send evidence. Inference and credential checks
-    // still require a fresh account-specific permission on every request.
-    const url = new URL(route.baseUrl);
-    if ((registration || personalDeepSeek) && host === 'api.deepseek.com' && url.protocol === 'https:' && !url.port &&
-        !url.username && !url.password && !url.search && !url.hash && ['/', '/v1'].includes(url.pathname)) return;
-    fail(503, 'provider_policy', 'This analysis route is unavailable under the production data policy.');
-  }
+  if (!isDeepSeek(route)) return;
+  const url = new URL(route.baseUrl), host = url.hostname.toLowerCase();
+  // Metadata registration sends no evidence. Inference approval comes only from
+  // the fresh global and account checks; migration preparation cannot bypass it.
+  const approved = registration === true || personalDeepSeek === true;
+  const official = host === 'api.deepseek.com' && url.protocol === 'https:' && !url.port &&
+    !url.username && !url.password && !url.search && !url.hash && ['/', '/v1'].includes(url.pathname);
+  if (approved && (!config.production || official)) return;
+  fail(503, 'provider_policy', 'This analysis route is unavailable under the production data policy.');
 }
