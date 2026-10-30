@@ -57,7 +57,7 @@ export class ControlStore {
     return member.orgId;
   }
   async list(collection, limit = 500, allowMore = false) {
-    if (!this.shared) return [...this.memory.entries()].filter(([path]) => path.startsWith(collection + '/') && path.split('/').length === 2)
+    if (!this.shared) return [...this.memory.entries()].filter(([path]) => path.startsWith(collection + '/') && path.split('/').length === collection.split('/').length + 1)
       .sort(([a], [b]) => a.localeCompare(b)).slice(0, limit).map(([, value]) => structuredClone(value.data));
     const value = await this.request(`${this.root}/${collection}?pageSize=${limit}&orderBy=__name__`);
     if (value?.nextPageToken && !allowMore) fail(503, 'control_limit', 'This registry exceeds its page limit. Archive unused records before adding more.');
@@ -70,7 +70,8 @@ export class ControlStore {
       return true;
     }
     const response = await this.request(`${this.root}:commit`, { method: 'POST', body: JSON.stringify({ writes: changes.map(change => ({
-      update: { name: `${this.root}/${change.path}`, fields: { json: { stringValue: JSON.stringify(change.data) } } },
+      update: { name: `${this.root}/${change.path}`, fields: { json: { stringValue: JSON.stringify(change.data) },
+        ...(change.path.split('/').at(-2) === 'liveFlow' && change.data.expiresAt ? { expiresAt: { timestampValue: change.data.expiresAt } } : {}) } },
       currentDocument: change.version ? { updateTime: change.version } : { exists: false },
     })) }) });
     return !!response && !response.conflict;

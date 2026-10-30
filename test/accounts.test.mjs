@@ -152,10 +152,13 @@ test('live protected roles, disabled state and assignment determine permissions 
   const app = await start(t), { cookie } = await app.login();
   for (const role of ['reader', 'viewer']) {
     app.state.user.app_metadata = { role }; app.state.user.user_metadata = { role: 'admin' };
-    assert.equal((await app.call('/session', cookie)).status, 403);
-    assert.equal((await app.call('/app', cookie)).status, 303);
+    const session = await app.call('/session', cookie); assert.equal(session.status, 200);
+    const profile = await session.json(); assert.equal(profile.landingPath, '/live'); assert.equal(profile.permissions.run, false);
+    assert.equal((await app.call('/app', cookie)).headers.get('location'), '/live');
     const login = await app.call('/session', undefined, 'POST', { email: 'admin@example.com', password: app.state.password });
-    assert.equal(login.status, 403); assert(!login.headers.has('set-cookie'));
+    assert.equal(login.status, 200); assert(login.headers.has('set-cookie'));
+    assert.equal((await app.call('/live', cookie)).status, 200);
+    const activity = await (await app.call('/v1/live-flow', cookie)).json(); assert.equal(activity.scope.kind, 'self');
     assert.equal((await app.call('/v1/monitoring', cookie)).status, 403);
     assert.equal((await app.call('/v1/access/users', cookie)).status, 403);
     for (const route of ['/v1/engines', '/v1/engines/test', '/v1/evaluations']) assert.equal((await app.call(route, cookie, 'POST', {})).status, 403);
@@ -177,7 +180,7 @@ test('approved participants sign in and run assigned engines while every adminis
   app.state.user.user_metadata = { role: 'admin' };
   const { cookie, response } = await app.login(), profile = await response.json();
   assert.equal(profile.user.role, 'participant');
-  assert.deepEqual(profile.permissions, { run: true, create: false, test: false, evaluate: false, manageUsers: false, monitoring: false });
+  assert.deepEqual(profile.permissions, { run: true, create: false, test: false, evaluate: false, manageUsers: false, monitoring: false, liveFlow: true });
   assert.equal((await app.call('/app', cookie)).status, 200);
   assert.equal((await app.call('/session', cookie)).status, 200);
   assert.equal((await app.call('/v1/engines', cookie)).status, 200);

@@ -37,7 +37,7 @@ Set `COLOSSUS_CONTROL_DATABASE` and `COLOSSUS_VAULT_SECRET` together. Production
 
 On first access, the gateway seeds missing environment model routes and seven system records. Existing records are never overwritten during startup. Database records become authoritative for enabled state, model routing, limits and prices. The initial provider keeps its managed environment credential; new provider credentials are encrypted before being written. Registry reads never return credential ciphertext/plaintext or system-key hashes. System-key plaintext is returned only by the issue response. Configuration/key operation attempts are recorded before writes and should be interpreted as requests, not proof of success.
 
-Firestore stores configuration, key hashes/grants, monthly wallets/reservations, process cancellation metadata and audit requests. Prompt/evidence/result payloads are excluded. Existing immutable usage history remains in private Cloud Storage. Database retention/backups are operational policies; no automatic cleanup or TTL is enabled by this release. Unknown usage retains spending reservations for investigation. Model-call limits and budget reservations use atomic conditional writes across instances. The console has eight separate management request slots per instance so a full inference queue still permits cancellation.
+Firestore stores configuration, key hashes/grants, monthly wallets/reservations, process cancellation metadata and audit requests. Prompt/evidence/result payloads are excluded. Existing immutable usage history remains in private Cloud Storage. Database retention/backups are operational policies; the live-flow cache has a separate 24-hour TTL setup described below. Unknown usage retains spending reservations for investigation. Model-call limits and budget reservations use atomic conditional writes across instances. The console has eight separate management request slots per instance so a full inference queue still permits cancellation.
 
 The production database/vault have been provisioned. Other installations can omit the database for legacy environment-only inference; production control APIs then report setup required. Local development uses a labelled memory registry and must not be used as durable credential storage.
 
@@ -52,6 +52,13 @@ Browser sessions use the same private bucket (or `COLOSSUS_SESSION_BUCKET` if ex
 Inference results, source text and evaluation reports are returned to callers and not retained by Colossus. For long evaluations and later live media, add durable jobs/sessions and distributed per-client quotas. Current limits bound concurrency without guaranteeing latency or provider quotas.
 
 ## Monitoring configuration
+
+Before releasing `/live`, configure and verify the `expiresAt` TTL on collection
+group `liveFlow` in `astra-colossus`. This expires only the new derived live
+snapshots, including scoped index copies. The existing database runtime IAM
+already permits checkpoint writes; no provider access, inference setting or new
+service is required. See [Live flow](docs/LIVE-FLOW.md) for the exact commands,
+account scopes, operational bounds and rollback behavior.
 
 The browser console and `GET /v1/monitoring` require a current, enabled Astra admin account with Colossus access. Account bearer calls from Enigma retain existing inference access and are recorded against the verified user. Service credentials cannot read browser monitoring.
 

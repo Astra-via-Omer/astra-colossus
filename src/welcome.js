@@ -1,6 +1,7 @@
 const form = document.getElementById('welcome-login'), status = document.getElementById('welcome-status');
 let busy = false;
-const destination = () => location.hash === '#guide' ? '/app#guide' : '/app';
+const destination = data => new URLSearchParams(location.search).get('next') === 'live' || data?.landingPath === '/live'
+  ? '/live' : location.hash === '#guide' ? '/app#guide' : '/app';
 async function session(method = 'GET', body) {
   const response = await fetch('/session', { method, credentials: 'same-origin',
     headers: body ? { 'Content-Type': 'application/json' } : {}, ...(body ? { body: JSON.stringify(body) } : {}) });
@@ -11,17 +12,17 @@ async function session(method = 'GET', body) {
 function signedIn(data) {
   form.hidden = true; document.getElementById('welcome-account').hidden = false;
   document.getElementById('welcome-title').textContent = data.user.name ? `Welcome back, ${data.user.name}.` : 'Welcome back.';
-  document.getElementById('welcome-description').textContent = 'Your Astra account is connected. Continue to your engine room.';
+  document.getElementById('welcome-description').textContent = data.landingPath === '/live' ? 'Your Astra account is connected. Continue to your live activity.' : 'Your Astra account is connected. Continue to your engine room.';
   document.getElementById('welcome-identity').textContent = data.user.email;
   document.getElementById('welcome-role').textContent = `Astra ${data.user.role}`;
-  document.getElementById('welcome-continue').href = destination();
+  document.getElementById('welcome-continue').href = destination(data);
 }
 form.addEventListener('submit', async event => {
   event.preventDefault(); if (busy) return; busy = true;
   document.getElementById('welcome-submit').disabled = true; status.textContent = 'Checking your Astra account…';
   try {
     const data = await session('POST', Object.fromEntries(new FormData(form)));
-    form.reset();location.assign(destination());
+    form.reset();location.assign(destination(data));
   }
   catch (error) { status.textContent = error.message; document.getElementById('welcome-password').value = ''; }
   finally { busy = false; document.getElementById('welcome-submit').disabled = false; }

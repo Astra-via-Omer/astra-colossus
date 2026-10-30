@@ -4,5 +4,5 @@
   "private": true,
   "type": "module",
   "engines": { "node": ">=22" },
-  "scripts": { "start": "node src/server.mjs", "test": "node --test test/*.test.mjs", "validate:christopher": "node scripts/validate-christopher.mjs", "demo:christopher": "node scripts/validate-christopher.mjs --serve" }
+  "scripts": { "start": "node src/server.mjs", "test": "node --test test/*.test.mjs", "preview:live": "node scripts/preview-live-flow.mjs", "validate:christopher": "node scripts/validate-christopher.mjs", "demo:christopher": "node scripts/validate-christopher.mjs --serve" }
 }
