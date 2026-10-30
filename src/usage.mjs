@@ -71,10 +71,15 @@ export function summarize(records) {
 }
 
 export class UsageMonitor {
-  constructor(config, fetcher, now = Date.now) {
+  constructor(config, fetcher, now = Date.now, onChange = () => {}) {
     this.config = config; this.now = now; this.local = new Map(); this.active = new Map(); this.finished = new Map();
     this.bucket = config.usageBucket; this.fetch = fetcher;
     this.cloud = this.bucket ? new CloudRegistry(this.bucket, fetcher) : undefined;
+    this.onChange = onChange; this.callRecords = new WeakMap();
+  }
+  changed(record) {
+    // Capture after the caller has attached route/provider/reservation metadata.
+    queueMicrotask(() => { try { Promise.resolve(this.onChange(record)).catch(() => {}); } catch {} });
   }
   name(record, phase) {
     // Reverse time keeps bounded cloud queries ordered newest first.
@@ -102,20 +107,21 @@ export class UsageMonitor {
       systemId: identity.systemId || (identity.kind === 'account' ? 'shared' : 'legacy'), keyId: identity.keyId || null,
       actor: identity.kind === 'account' ? { kind: 'account', id: identity.id, email: identity.email } : { kind: 'service', id: identity.id, email: '' },
       startedAt: new Date(this.now()).toISOString(), completedAt: null, durationMs: 0, status: 'running', calls: [] };
-    await this.save(record, 'started'); this.active.set(requestId, record); return record;
+    await this.save(record, 'started'); this.active.set(requestId, record); this.changed(record); return record;
   }
   call(record, route, engine) {
     const call = { index: record.calls.length + 1, route: route.alias, providerModel: route.model,
       ...(engine ? { engine: { id: engine.id, version: engine.version } } : {}),
       startedAt: new Date(this.now()).toISOString(), durationMs: 0, status: 'running',
       usage: tokenUsage(), rates: route.pricing ? { ...route.pricing } : null, cost: { usd: null, complete: false } };
-    record.calls.push(call); return call;
+    record.calls.push(call); this.callRecords.set(call, record); this.changed(record); return call;
   }
   finishCall(call, status, usage, httpStatus) {
     if (usage !== undefined) call.usage = tokenUsage(usage);
     call.status = status; call.durationMs = Math.max(0, this.now() - Date.parse(call.startedAt));
     if (httpStatus !== undefined) call.httpStatus = httpStatus;
     call.cost = tokenCost(call.usage, call.rates);
+    const record = this.callRecords.get(call); if (record) this.changed(record);
   }
   async finish(record, status, errorCode) {
     if (!record || record.status !== 'running') return;
@@ -123,6 +129,7 @@ export class UsageMonitor {
     record.durationMs = Math.max(0, this.now() - Date.parse(record.startedAt));
     if (errorCode) record.errorCode = errorCode;
     for (const call of record.calls) if (call.status === 'running') this.finishCall(call, status === 'cancelled' ? 'cancelled' : 'failed');
+    this.changed(record);
     try { await this.save(record, 'finished'); } finally { this.active.delete(record.requestId); }
   }
   async records(days) {

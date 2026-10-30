@@ -64,6 +64,14 @@ Alternatively, use the scoped key itself as the bearer for machine-only work. Ex
 
 ## Usage, processing time and cost
 
+**Live flow** opens the separate `/live` page with an interactive 3D request map
+and an accessible list. Administrators see system activity; Astra-via
+Professionals see their approved organization/group; other approved users see
+only themselves. The page polls shared, allowlisted gateway checkpoints every
+two seconds and labels missing usage, stale processes and interrupted views.
+See [the live activity contract](docs/LIVE-FLOW.md) for access, attribution,
+the 15-minute/200-process bound, retention setup and isolated local preview.
+
 After admin sign-in, **Costs & usage** shows activity for all verified accounts and service callers. Filter by the last 24 hours, 7 days or 30 days, and select an account. It refreshes every 15 seconds while visible; the operations overview refreshes every 30 seconds. Model-route and account summaries show token counts, estimated cost and processing duration. **Processes** filters recent activity by system/status and opens a per-call inspector with a cancellation action for running work. Running, completed, failed, cancelled and stale processes remain distinguishable. Evaluation cases count as separate model calls within one process; paid usage is retained even if output validation fails.
 
 Every inference process writes an immutable start record before calling a provider and a completion record before returning. Production history uses private Cloud Storage, defaulting to `COLOSSUS_ENGINE_BUCKET`; `COLOSSUS_USAGE_BUCKET` selects a separate private bucket with the same runtime read/create permissions. Local development uses bounded process memory and labels its reset-on-restart behavior. Records contain verified account ID/email or an opaque service-key fingerprint, model identity, engine identity, timestamps, status, token usage and rates. They exclude evidence, prompts, generated text, passwords and tokens. Services using a shared machine credential are grouped under that credential; Colossus cannot infer their end user. Enigma’s account bearer calls are attributed to the verified account. History starts with this release; earlier activity is not reconstructed.
@@ -115,6 +123,8 @@ Authenticate with `Authorization: Bearer <service key or shared-account access t
 |---|---|---|
 | GET | `/` | Public welcome and account sign-in |
 | GET | `/app` | Account-only engine room; redirects signed-out/denied visitors |
+| GET | `/live` | Account-only 3D live activity page with server-enforced scope |
+| GET | `/v1/live-flow?scope=self` | Current account cookie only: bounded system, organization, group or personal activity according to protected role/membership |
 | POST / GET / DELETE | `/session` | Sign in, inspect current account, revoke browser session |
 | GET / PATCH | `/v1/access/users` | Account admin only: shared user list and reviewed role/state changes |
 | GET | `/v1/monitoring?days=1&userId=UUID` | Browser admin only: usage, cost and process history; days is 1, 7 or 30; userId is optional |

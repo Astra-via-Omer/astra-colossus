@@ -23,6 +23,7 @@ import { demoInput, demoExamples } from './christopherFixtures.mjs';
 import { ChristopherWorkspace } from './christopherWorkspace.mjs';
 import { christopherShell } from './christopherShell.mjs';
 import { ProductAccess } from './productAccess.mjs';
+import { LiveFlow } from './liveFlow.mjs';
 
 async function boundedJson(stream, limit, upstream = false) {
   const chunks = []; let size = 0;
@@ -38,9 +39,10 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
   const registry = config.engineBucket ? new CloudRegistry(config.engineBucket, fetcher) : new EngineRegistry(config, fetcher);
   const sessions = new Sessions(config, fetcher);
   const vertexTokens = new CloudRegistry('', fetcher);
-  const monitoring = new UsageMonitor(config, fetcher);
   const media = new MediaObserver(config.media, fetcher);
   const control = new ControlPlane(config, fetcher, endpointFetcher, controlStore), activeControllers = new Map();
+  const liveFlow = new LiveFlow(control, config);
+  const monitoring = new UsageMonitor(config, fetcher, Date.now, record => liveFlow.observe(record));
   const productAccess = new ProductAccess(control);
   const christopherLearning = new ChristopherLearning(control.store, { captureEnabled: config.christopherCaptureEnabled, retentionReady: config.christopherRetentionReady });
   const christopherWorkspace = new ChristopherWorkspace(fetcher);
@@ -86,17 +88,19 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
     if (!identity.admin) fail(403, 'admin_required', 'Only Astra administrators can manage Colossus operations.');
     return identity;
   }
-  async function browserIdentity(req) {
+  async function sessionIdentity(req) {
     if (!['GET', 'HEAD'].includes(req.method)) checkOrigin(req);
     const id = sessionId(req);
     if (!id) fail(401, 'unauthorized', 'Sign in with your Astra account.');
     const session = await sessions.get(id);
-    return { ...requireConsoleAccess(await userFor(session.token)), expiresAt: session.expiresAt, systemId: 'colossus', productVerified: true };
+    return { ...await userFor(session.token), expiresAt: session.expiresAt, systemId: 'colossus', productVerified: true };
   }
+  async function browserIdentity(req) { return requireConsoleAccess(await sessionIdentity(req)); }
   const hasRegistry = () => !!(config.engineBucket || (config.serviceKey && config.supabaseUrl) || (config.engineFile && !config.production));
   const profile = identity => ({ user: { id: identity.id, email: identity.email, name: identity.name, role: identity.role },
-    expiresAt: identity.expiresAt, permissions: { run: true, create: identity.admin && hasRegistry(), test: identity.admin,
-      evaluate: identity.admin, manageUsers: identity.admin, monitoring: identity.admin } });
+    expiresAt: identity.expiresAt, landingPath: ['admin', 'participant'].includes(identity.role) ? '/app' : '/live',
+    permissions: { run: ['admin', 'professional', 'participant'].includes(identity.role), create: identity.admin && hasRegistry(), test: identity.admin,
+      evaluate: identity.admin, manageUsers: identity.admin, monitoring: identity.admin, liveFlow: true } });
   async function authenticate(req) {
     const bearer = /^Bearer (\S+)$/.exec(req.headers.authorization || '')?.[1];
     const clientHeader = req.headers['x-colossus-service-key'];
@@ -201,6 +205,9 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
         }
       }
       catch { logger({ service: 'colossus', requestId, operation: 'usage_record_failed', code: 'usage_unavailable' }); }
+      // Finish this request's best-effort checkpoint before Cloud Run can
+      // suspend CPU after the response. Telemetry failures remain non-fatal.
+      if (process) await liveFlow.flush(process.requestId);
     }
     async function complete(body, status = 'completed') { await finishProcess(status); return json(res, body); }
     res.once('close', () => { if (!res.writableFinished) controller.abort(); });
@@ -214,6 +221,7 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
       if (method === 'GET' && url.pathname === '/healthz') { operation = 'health'; return json(res, { service: 'colossus', status: draining ? 'draining' : 'ready' }, draining ? 503 : 200); }
       const assets = { '/': ['welcome.html', 'text/html'], '/welcome.js': ['welcome.js', 'text/javascript'], '/console.js': ['console.js', 'text/javascript'], '/console.css': ['console.css', 'text/css'], '/operations.js': ['operations.js', 'text/javascript'], '/group-editor.js': ['group-editor.js', 'text/javascript'], '/operations.css': ['operations.css', 'text/css'], '/theme.js': ['theme.js', 'text/javascript'], '/astra-logo.svg': ['astra-logo.svg', 'image/svg+xml'], '/astra-logo-light.svg': ['astra-logo-light.svg', 'image/svg+xml'], '/astra-icon.svg': ['astra-icon.svg', 'image/svg+xml'] };
       Object.assign(assets, { '/astra-display.js': ['astra-display.js', 'text/javascript'], '/display-contract.mjs': ['display-contract.mjs', 'text/javascript'], '/astra-display.css': ['astra-display.css', 'text/css'] });
+      Object.assign(assets, { '/live-flow.js': ['live-flow.js', 'text/javascript'], '/live-flow-scene.js': ['live-flow-scene.js', 'text/javascript'], '/live-flow.css': ['live-flow.css', 'text/css'] });
       const asset = Object.hasOwn(assets, url.pathname) ? assets[url.pathname] : undefined;
       if (method === 'GET' && asset) { operation = 'console'; res.writeHead(200, { 'Content-Type': `${asset[1]}; charset=utf-8` }); return res.end(await readFile(new URL(asset[0], import.meta.url))); }
       const privateAssets = { '/admin/christopher': ['christopher.html', 'text/html'], '/admin/christopher.js': ['christopher-ui.js', 'text/javascript'], '/admin/christopher.css': ['christopher.css', 'text/css'], '/admin/christopher-gravity.js': ['christopher-gravity.js', 'text/javascript'], '/admin/christopher-report.js': ['christopher-report.js', 'text/javascript'], '/admin/christopher-pattern.js': ['christopher-pattern.js', 'text/javascript'] };
@@ -226,14 +234,34 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
         res.writeHead(200, { 'Content-Type': `${type}; charset=utf-8` }); return res.end(content);
       }
       if (draining) fail(503, 'draining', 'Colossus is shutting down. Retry another instance.');
-      const management = url.pathname.startsWith('/v1/control') || url.pathname === '/v1/monitoring' || url.pathname.startsWith('/session') || url.pathname === '/v1/preferences';
+      const management = url.pathname.startsWith('/v1/control') || url.pathname === '/v1/monitoring' || url.pathname === '/v1/live-flow' || url.pathname === '/live' || url.pathname.startsWith('/session') || url.pathname === '/v1/preferences';
       if (management ? controlInflight >= 8 : inflight >= config.maxInflight) { res.setHeader('Retry-After', '2'); fail(429, 'capacity', 'This instance is at capacity. Retry shortly.'); }
       if (management) controlInflight++; else inflight++;
       admitted = management ? 'control' : 'inference';
       timer = setTimeout(() => controller.abort(), config.timeout);
+      if (method === 'GET' && url.pathname === '/live') {
+        operation = 'live_flow_page';
+        try { await sessionIdentity(req); }
+        catch (error) {
+          if (![401, 403].includes(error.status)) throw error;
+          res.writeHead(303, { Location: `/?access=${error.status === 403 ? 'denied' : 'signin'}&next=live` }); return res.end();
+        }
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        return res.end(await readFile(new URL('live-flow.html', import.meta.url)));
+      }
+      if (url.pathname === '/v1/live-flow') {
+        operation = 'live_flow'; const identity = await sessionIdentity(req);
+        if (method !== 'GET') fail(405, 'method_not_allowed', 'Use GET for live activity.');
+        if ([...url.searchParams.keys()].some(k => k !== 'scope')) fail(400, 'live_filter', 'Select an authorized scope. Account and organization IDs are derived on the server.');
+        return json(res, await liveFlow.snapshot(identity, url.searchParams.get('scope') || ''));
+      }
       if (method === 'GET' && url.pathname === '/app') {
         operation = 'engine_room';
-        try { await browserIdentity(req); }
+        try {
+          const identity = await sessionIdentity(req);
+          if (!['admin', 'participant'].includes(identity.role)) { res.writeHead(303, { Location: '/live' }); return res.end(); }
+          requireConsoleAccess(identity);
+        }
         catch (error) {
           if (![401, 403].includes(error.status)) throw error;
           res.writeHead(303, { Location: `/?access=${error.status === 403 ? 'denied' : 'signin'}`, 'Set-Cookie': cookie('', 0) }); return res.end();
@@ -241,7 +269,7 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
         return res.end(await readFile(new URL('console.html', import.meta.url)));
       }
-      if (method === 'GET' && url.pathname === '/session') { operation = 'account'; return json(res, profile(await browserIdentity(req))); }
+      if (method === 'GET' && url.pathname === '/session') { operation = 'account'; return json(res, profile(await sessionIdentity(req))); }
       if (url.pathname === '/v1/preferences') {
         operation = 'display_preferences'; const identity = await browserIdentity(req);
         if (!['GET', 'PUT'].includes(method)) fail(405, 'method_not_allowed', 'Use GET or PUT for personal display settings.');
@@ -270,7 +298,7 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
         try { data = await response.json(); }
         catch { fail(503, 'auth_unavailable', 'The shared sign-in service returned an invalid session.'); }
         if (!data || typeof data.access_token !== 'string' || !data.access_token || /\s/.test(data.access_token) || data.access_token.length > 16000) fail(503, 'auth_unavailable', 'The shared sign-in service returned an invalid session.');
-        const identity = requireConsoleAccess(await userFor(data.access_token)), previous = sessionId(req);
+        const identity = await userFor(data.access_token), previous = sessionId(req);
 
         if (previous) await sessions.revoke(previous);
         await sessions.revoke(pendingId(req));
@@ -429,7 +457,7 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
           let checking = false;
           cancellationTimer = setInterval(async () => {
             if (checking || controller.signal.aborted) return; checking = true;
-            try { if (await control.cancellation(requestId)) controller.abort('admin_cancelled'); } catch {} finally { checking = false; }
+            try { if (await control.cancellation(requestId)) controller.abort('admin_cancelled'); liveFlow.observe(process, true); } catch {} finally { checking = false; }
           }, 3000); cancellationTimer.unref();
         }
       }
@@ -544,7 +572,7 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
   server.requestTimeout = Math.min(config.timeout, 30000);
   server.headersTimeout = 10000;
   server.keepAliveTimeout = 5000;
-  return { server, registry, sessions, monitoring, control, productAccess, christopherLearning, drain() { draining = true; server.close(); }, get inflight() { return inflight; } };
+  return { server, registry, sessions, monitoring, liveFlow, control, productAccess, christopherLearning, drain() { draining = true; server.close(); }, get inflight() { return inflight; } };
 }
 const normalizedQuote = s => s.replace(/\s+/g, ' ').trim();
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
