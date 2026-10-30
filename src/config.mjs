@@ -84,6 +84,7 @@ export function configuration(env = process.env) {
     workspaceDatabase: env.COLOSSUS_WORKSPACE_DATABASE || 'astra-workspace',
     vaultSecret: env.COLOSSUS_VAULT_SECRET || '',
     sessionSecret: env.COLOSSUS_SESSION_SECRET || providerKey || Object.values(routes)[0].key,
+    accountEvents:env.ASTRA_ACCOUNT_EVENTS==='on',eventPublishKey:env.ASTRA_EVENTS_PUBLISH_KEY,eventDispatchKey:env.ASTRA_EVENTS_DISPATCH_KEY,
     production: env.NODE_ENV === 'production' };
 }
 export function resolveRoute(config, model) {

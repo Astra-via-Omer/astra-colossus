@@ -71,11 +71,11 @@ export function summarize(records) {
 }
 
 export class UsageMonitor {
-  constructor(config, fetcher, now = Date.now, onChange = () => {}) {
+  constructor(config, fetcher, now = Date.now, onChange = () => {}, beforeSave = async () => {}) {
     this.config = config; this.now = now; this.local = new Map(); this.active = new Map(); this.finished = new Map();
     this.bucket = config.usageBucket; this.fetch = fetcher;
     this.cloud = this.bucket ? new CloudRegistry(this.bucket, fetcher) : undefined;
-    this.onChange = onChange; this.callRecords = new WeakMap();
+    this.beforeSave=beforeSave; this.onChange = onChange; this.callRecords = new WeakMap();
   }
   changed(record) {
     // Capture after the caller has attached route/provider/reservation metadata.
@@ -99,6 +99,7 @@ export class UsageMonitor {
       if (this.local.size > 1000) this.local.delete(this.local.keys().next().value);
       return;
     }
+    await this.beforeSave(record,phase);
     const url = `https://storage.googleapis.com/upload/storage/v1/b/${encodeURIComponent(this.bucket)}/o?uploadType=media&ifGenerationMatch=0&name=${encodeURIComponent(this.name(record, phase))}`;
     await this.request(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(record) });
   }

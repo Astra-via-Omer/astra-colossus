@@ -1,4 +1,6 @@
 import http from 'node:http';
+import {AccountEventOutbox} from './accountEventOutbox.mjs';
+import {accountUpdates,accountUpdateHeaders,AccountEventsError} from './account-events/account-events.mjs';
 import { readFile } from 'node:fs/promises';
 import { randomUUID, createHash } from 'node:crypto';
 import { Readable } from 'node:stream';
@@ -42,7 +44,9 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
   const media = new MediaObserver(config.media, fetcher);
   const control = new ControlPlane(config, fetcher, endpointFetcher, controlStore), activeControllers = new Map();
   const liveFlow = new LiveFlow(control, config);
-  const monitoring = new UsageMonitor(config, fetcher, Date.now, record => liveFlow.observe(record));
+  let eventOutbox;
+  const monitoring = new UsageMonitor(config, fetcher, Date.now, record => liveFlow.observe(record),(record,phase)=>eventOutbox.prepare(record,phase));
+  eventOutbox=new AccountEventOutbox(control.store,monitoring,config,fetcher);
   const productAccess = new ProductAccess(control);
   const christopherLearning = new ChristopherLearning(control.store, { captureEnabled: config.christopherCaptureEnabled, retentionReady: config.christopherRetentionReady });
   const christopherWorkspace = new ChristopherWorkspace(fetcher);
@@ -222,6 +226,7 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
       const assets = { '/': ['welcome.html', 'text/html'], '/welcome.js': ['welcome.js', 'text/javascript'], '/console.js': ['console.js', 'text/javascript'], '/console.css': ['console.css', 'text/css'], '/operations.js': ['operations.js', 'text/javascript'], '/group-editor.js': ['group-editor.js', 'text/javascript'], '/operations.css': ['operations.css', 'text/css'], '/theme.js': ['theme.js', 'text/javascript'], '/astra-logo.svg': ['astra-logo.svg', 'image/svg+xml'], '/astra-logo-light.svg': ['astra-logo-light.svg', 'image/svg+xml'], '/astra-icon.svg': ['astra-icon.svg', 'image/svg+xml'] };
       Object.assign(assets, { '/astra-display.js': ['astra-display.js', 'text/javascript'], '/display-contract.mjs': ['display-contract.mjs', 'text/javascript'], '/astra-display.css': ['astra-display.css', 'text/css'] });
       Object.assign(assets, { '/live-flow.js': ['live-flow.js', 'text/javascript'], '/live-flow-scene.js': ['live-flow-scene.js', 'text/javascript'], '/live-flow.css': ['live-flow.css', 'text/css'] });
+      Object.assign(assets, {'/account-updates.js':['account-updates.js','text/javascript'],'/account-updates.css':['account-updates.css','text/css']});
       const asset = Object.hasOwn(assets, url.pathname) ? assets[url.pathname] : undefined;
       if (method === 'GET' && asset) { operation = 'console'; res.writeHead(200, { 'Content-Type': `${asset[1]}; charset=utf-8` }); return res.end(await readFile(new URL(asset[0], import.meta.url))); }
       const privateAssets = { '/admin/christopher': ['christopher.html', 'text/html'], '/admin/christopher.js': ['christopher-ui.js', 'text/javascript'], '/admin/christopher.css': ['christopher.css', 'text/css'], '/admin/christopher-gravity.js': ['christopher-gravity.js', 'text/javascript'], '/admin/christopher-report.js': ['christopher-report.js', 'text/javascript'], '/admin/christopher-pattern.js': ['christopher-pattern.js', 'text/javascript'] };
@@ -234,11 +239,29 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
         res.writeHead(200, { 'Content-Type': `${type}; charset=utf-8` }); return res.end(content);
       }
       if (draining) fail(503, 'draining', 'Colossus is shutting down. Retry another instance.');
-      const management = url.pathname.startsWith('/v1/control') || url.pathname === '/v1/monitoring' || url.pathname === '/v1/live-flow' || url.pathname === '/live' || url.pathname.startsWith('/session') || url.pathname === '/v1/preferences';
+
+      const management = url.pathname.startsWith('/v1/control') || url.pathname === '/v1/monitoring' || url.pathname === '/v1/live-flow' || url.pathname === '/live' || url.pathname.startsWith('/session') || url.pathname === '/v1/preferences' || url.pathname.startsWith('/api/account-events');
       if (management ? controlInflight >= 8 : inflight >= config.maxInflight) { res.setHeader('Retry-After', '2'); fail(429, 'capacity', 'This instance is at capacity. Retry shortly.'); }
       if (management) controlInflight++; else inflight++;
       admitted = management ? 'control' : 'inference';
       timer = setTimeout(() => controller.abort(), config.timeout);
+      if(url.pathname==='/api/account-events/dispatch'&&method==='POST'){
+        if(!/^[a-f0-9]{64}$/.test(config.eventDispatchKey||'')||!equalSecret(req.headers['x-astra-event-dispatch'],config.eventDispatchKey))fail(403,'access_denied','Dispatcher access denied.');
+        return json(res,await eventOutbox.dispatch());
+      }
+      if(url.pathname==='/api/account-events'){
+        if(!['GET','POST'].includes(method))fail(405,'method_not_allowed','Use GET or POST for account updates.');
+        if(method==='POST')checkOrigin(req);
+        const identity=await sessionIdentity(req);
+        if(identity.kind!=='account')fail(403,'access_denied','Account updates require a signed-in Astra account.');
+        if(method==='POST'&&!(req.headers['content-type']||'').startsWith('application/json'))fail(415,'content_type','Use application/json.');
+        try{
+          const result=await accountUpdates({url:config.supabaseUrl,anonKey:config.anonKey,token:identity.token,product:'colossus'},
+            method==='POST'?await boundedJson(req,4096):undefined,fetcher);
+          for(const [key,value] of Object.entries(accountUpdateHeaders))res.setHeader(key,value);
+          return json(res,result);
+        }catch(error){if(error instanceof AccountEventsError)fail(error.status,'account_updates_unavailable',error.message);throw error;}
+      }
       if (method === 'GET' && url.pathname === '/live') {
         operation = 'live_flow_page';
         try { await sessionIdentity(req); }

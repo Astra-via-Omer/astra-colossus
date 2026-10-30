@@ -1,3 +1,5 @@
+import {mountAccountUpdates} from '/account-updates.js';
+let stopAccountUpdates=()=>{},updatesMounted=false;
 import { LiveScene } from '/live-flow-scene.js';
 const byId = id => document.getElementById(id), count = n => Number.isFinite(n) ? n.toLocaleString() : '—';
 const clock = value => new Intl.DateTimeFormat(undefined, { timeZone: 'Asia/Jerusalem', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).format(new Date(value));
@@ -122,6 +124,7 @@ async function refresh(force = false) {
       const error = Error(data.error?.message || 'Live telemetry is unavailable.'); error.status = response.status; throw error;
     }
     snapshot = data; failures = 0; receivedAt = performance.now();
+    if(!updatesMounted){stopAccountUpdates=mountAccountUpdates(byId('live-account-updates'));updatesMounted=true;}
     byId('last-update').textContent = `${clock(data.generatedAt)} Jerusalem · just now`;
     options('scope', data.availableScopes.map(s => [s.kind, s.name])); byId('scope').value = data.scope.kind;
     options('product', data.catalog.systems.map(s => [s.id, s.name]), 'All products in view');
@@ -135,6 +138,7 @@ async function refresh(force = false) {
     byId('metric-active').textContent = '—'; byId('access-message').hidden = false;
     byId('access-message').textContent = error.status === 401 ? 'Your session has ended. Sign in again to view activity.' : error.message;
     if ([401, 403].includes(error.status)) {
+      stopAccountUpdates();updatesMounted=false;
       clearSnapshot();
       byId('scope').replaceChildren(); byId('product').replaceChildren(); byId('model').replaceChildren(); byId('viewer-email').textContent = 'Access verification required';
       byId('selection-title').textContent = 'Access verification required'; byId('selection-description').textContent = 'The previous scope has been cleared.';
@@ -154,7 +158,7 @@ byId('view-list').addEventListener('click', () => { byId('scene-wrap').hidden = 
 byId('reset-view').addEventListener('click', () => { selected = null; scene.reset(); inspect(); });
 byId('pause').addEventListener('click', () => { paused = !paused; byId('pause').textContent = paused ? 'Resume' : 'Pause'; byId('pause').setAttribute('aria-pressed', String(paused)); clearTimeout(timer); status(paused ? 'Paused view' : 'Reconnecting', false); if (snapshot) render(false); if (!paused) refresh(true); });
 byId('refresh').addEventListener('click', () => refresh(true));
-byId('sign-out').addEventListener('click', async () => { closed = true; sequence++; clearTimeout(timer); scene.clear(); try { await fetch('/session', { method: 'DELETE', credentials: 'same-origin' }); } finally { location.assign('/?next=live'); } });
+byId('sign-out').addEventListener('click', async () => { stopAccountUpdates();closed = true; sequence++; clearTimeout(timer); scene.clear(); try { await fetch('/session', { method: 'DELETE', credentials: 'same-origin' }); } finally { location.assign('/?next=live'); } });
 document.addEventListener('visibilitychange', () => { clearTimeout(timer); if (document.hidden) { scene.setConnected(false); status('Tab inactive', false); if (snapshot) render(false); } else if (!paused && !closed) refresh(true); });
 window.addEventListener('offline', () => { status('Browser offline', false, true); if (snapshot) render(false); });
 window.addEventListener('online', () => refresh(true));

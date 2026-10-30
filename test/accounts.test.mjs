@@ -12,6 +12,7 @@ async function start(t, extra = {}) {
   const state = { user, authStatus: 200, tokenStatus: 200, rpcStatus: 200, calls: [], password: 'synthetic-password', token:'synthetic-account-token', verifiedToken:'unused', code:'123456' };
   const cloudFetch = cloud(new Map());
   const fetcher = async (url, options = {}) => {
+    url=String(url);
     state.calls.push({ url, options });
     if (url.includes('/auth/v1/token')) {
       const input = JSON.parse(options.body); assert.equal(input.email, 'admin@example.com');
@@ -29,6 +30,10 @@ async function start(t, extra = {}) {
     if (url.includes('/auth/v1/factors/')) {
       if (url.endsWith('/challenge')) return Response.json({id:'synthetic-challenge'});
       return Response.json({access_token:state.verifiedToken,expires_in:3600},{status:JSON.parse(options.body).code===state.code?200:400});
+    }
+    if(url.endsWith('/astra_events_settings')||url.endsWith('/astra_events_feed')){
+      assert.equal(options.headers.Authorization,'Bearer '+state.token);assert.equal(JSON.parse(options.body).p_product,'colossus');
+      return Response.json(url.endsWith('settings')?{accountId:state.user.id,enabled:true,canUseEvidence:false,revision:0}:{items:[],cursor:'0'},{status:state.rpcStatus});
     }
     if (url.includes('/rest/v1/rpc/')) {
       assert.equal(options.headers.Authorization, 'Bearer synthetic-account-token');
@@ -316,4 +321,15 @@ test('production admins sign in with passwords while live status and session iso
  assert.equal((await app.call('/session',active.replace('colossus_session','colossus_mfa_pending'))).status,401);
  app.state.authStatus=401;assert.equal((await app.call('/session',active)).status,401);
  app.state.authStatus=200;app.state.user.factors=[];response=await post({email:'admin@example.com',password:app.state.password});assert.equal(response.status,200);
+});
+
+
+test('account updates use the current account cookie, fixed product and live source permissions without console-admin access',async t=>{
+ const app=await start(t);assert.equal((await app.call('/api/account-events')).status,401);
+ const {cookie}=await app.login();app.state.user.app_metadata={role:'viewer',system_access:{colossus:true}};
+ const response=await app.call('/api/account-events',cookie);assert.equal(response.status,200);assert.equal((await response.json()).settings.accountId,adminId);
+ assert.equal((await app.call('/api/account-events',cookie,'POST',{action:'read',seq:'0',owner:otherId})).status,400);
+ assert.equal((await app.call('/api/account-events',cookie,'POST',{action:'read',seq:'0'},{Origin:'https://attacker.test'})).status,403);
+ app.state.rpcStatus=403;assert.equal((await app.call('/api/account-events',cookie)).status,403);
+ assert.equal((await app.call('/api/account-events/dispatch',null,'POST')).status,403);
 });

@@ -110,6 +110,7 @@ jobs:
           SESSION_VERSION: ${{ vars.COLOSSUS_SESSION_SECRET_VERSION }}
           VAULT_VERSION: ${{ vars.COLOSSUS_VAULT_SECRET_VERSION || '1' }}
           MIGRATION_MODE: ${{ vars.COLOSSUS_PROVIDER_MIGRATION_MODE || 'strict' }}
+          EVENTS_VERSION: ${{ vars.ASTRA_EVENTS_SECRET_VERSION }}
           LEGACY_VERSION: ${{ vars.ASTRA_PROVIDER_SECRET_VERSION || '1' }}
         run: |
           python3 - <<'PY'
@@ -123,6 +124,8 @@ jobs:
               'COLOSSUS_VAULT_SECRET=astra-colossus-vault:' + version('VAULT_VERSION'),
               'COLOSSUS_MEDIA_INGEST_KEY=astra-enigma-media-ingest:1',
           ]
+          if os.environ.get('EVENTS_VERSION'):
+              bindings.extend(['ASTRA_EVENTS_PUBLISH_KEY=astra-events-colossus-publish:' + version('EVENTS_VERSION'), 'ASTRA_EVENTS_DISPATCH_KEY=astra-events-dispatch:' + version('EVENTS_VERSION')])
           if os.environ['MIGRATION_MODE'] == 'prepare':
               bindings.append('ASTRA_PROVIDER_CONFIG_JSON=astra-provider-config:' + version('LEGACY_VERSION'))
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
@@ -136,6 +139,7 @@ jobs:
           image: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GCP_ARTIFACT_REPOSITORY }}/astra-colossus:${{ github.sha }}
           flags: '--ingress=internal-and-cloud-load-balancing --timeout=300 --concurrency=16 --min-instances=0 --max-instances=10 --max=10 --memory=512Mi --service-account=${{ vars.GCP_RUNTIME_SERVICE_ACCOUNT }}'
           env_vars: |
+            ASTRA_ACCOUNT_EVENTS=${{ vars.ASTRA_ACCOUNT_EVENTS || 'off' }}
             COLOSSUS_ORIGIN=https://colossus.astra-via.com
             COLOSSUS_MAX_INFLIGHT=16
             COLOSSUS_API_KEYS_JSON=[]
