@@ -30,7 +30,7 @@ async function start(t) {
   const base = `http://127.0.0.1:${app.server.address().port}`;
   const backend = await app.control.issueKey({ name: 'Professional Workspace', systemId: 'workflow', allowedModels: ['astra-default'] }, administrator);
   const call = (path, body, extra = {}, method = body === undefined ? 'GET' : 'POST') => fetch(base + path, {
-    method, redirect: 'manual', headers: { Authorization: 'Bearer professional-token', Origin: origin,
+    method, redirect: 'manual', headers: { ...(!extra.Cookie ? { Authorization: 'Bearer professional-token' } : {}), Origin: origin,
       ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}), ...extra },
     ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
   });
@@ -73,7 +73,7 @@ test('Professional inference uses the assigned group and funded system without r
   assert.equal(app.state.providerCalls, successfulCalls);
 });
 
-test('Professional accounts cannot open the administrator console or invoke administration and Lab registration', async t => {
+test('Professional accounts without Colossus approval cannot enter or invoke administration and Lab registration', async t => {
   const app = await start(t), stale = await app.sessions.create('professional-token');
   const cookie = { Cookie: 'colossus_session=' + stale.id };
   const consoleResponse = await app.call('/app', undefined, cookie);
@@ -92,6 +92,77 @@ test('Professional accounts cannot open the administrator console or invoke admi
   app.state.user.app_metadata = { ...active, lab: { enabled: true, role: 'professional' } };
   const registration = await app.call('/v1/lab/models', {}, { 'X-Colossus-Service-Key': lab.oneTimeKey });
   assert.equal(registration.status, 403); assert.equal((await registration.json()).error.code, 'lab_registration_denied');
+  assert.equal(app.state.providerCalls, 0); assert.equal(app.state.rpcCalls.length, 0);
+});
+
+test('approved Professionals can view the full operations console without receiving administrator authority', async t => {
+  const app = await start(t);
+  app.state.user.app_metadata.system_access.colossus = true;
+  app.state.user.user_metadata = { role: 'admin' };
+  const login = await app.call('/session', { email: 'professional@example.invalid', password: 'synthetic-password' });
+  assert.equal(login.status, 200);
+  const profile = await login.json(), cookie = { Cookie: login.headers.get('set-cookie').split(';')[0] };
+  assert.equal(profile.landingPath, '/app'); assert.equal(profile.user.role, 'professional');
+  assert.equal(profile.permissions.operationsView, true); assert.equal(profile.permissions.monitoring, true);
+  for (const name of ['create', 'test', 'evaluate', 'manageUsers']) assert.equal(profile.permissions[name], false, name);
+  assert.equal((await app.call('/app', undefined, cookie)).status, 200);
+  for (const path of ['/v1/control', '/v1/control/organizations', '/v1/control/product-access', '/v1/monitoring', '/v1/capabilities', '/v1/engines']) {
+    const response = await app.call(path, undefined, cookie); assert.equal(response.status, 200, path);
+    const data = await response.json();
+    if (path === '/v1/control') {
+      assert(data.models.length > 0); assert(data.providers.length > 0); assert(data.systems.length > 0);
+      for (const provider of data.providers) assert(!Object.hasOwn(provider, 'credential'));
+      assert(!JSON.stringify(data).includes('synthetic-provider-key'));
+    }
+    if (path === '/v1/capabilities') { assert.equal(data.operationsView, true); assert.equal(data.admin, false); }
+  }
+  const process = await app.monitoring.start({ kind: 'account', id: adminId, email: administrator.email }, 'other-account-process', 'chat');
+  await app.monitoring.finish(process, 'completed');
+  const usage = await (await app.call('/v1/monitoring', undefined, cookie)).json();
+  assert(usage.processes.some(value => value.actor.id === adminId));
+  const live = await (await app.call('/v1/live-flow?scope=all', undefined, cookie)).json();
+  assert.equal(live.scope.kind, 'all'); assert.equal(live.viewer.console, true);
+  assert.equal(app.state.providerCalls, 0); assert.equal(app.state.rpcCalls.length, 0);
+});
+
+test('Professional console viewers cannot read shared user controls or perform configuration writes', async t => {
+  const app = await start(t); app.state.user.app_metadata.system_access.colossus = true;
+  const session = await app.sessions.create('professional-token'), cookie = { Cookie: 'colossus_session=' + session.id };
+  for (const path of ['/v1/access/users', '/v1/control/provider-settings', '/v1/control/provider-access/' + adminId, '/v1/provider-access?userId=' + adminId]) {
+    assert.equal((await app.call(path, undefined, cookie)).status, 403, path);
+  }
+  for (const path of ['/v1/control/providers', '/v1/control/models', '/v1/control/groups', '/v1/control/systems', '/v1/control/keys', '/v1/control/keys/any/revoke', '/v1/control/integrations', '/v1/control/jobs', '/v1/control/processes/any/cancel', '/v1/control/product-access', '/v1/control/product-licenses', '/v1/control/provider-settings', '/v1/control/provider-access/' + adminId, '/v1/access/users']) {
+    for (const method of ['POST', 'PATCH', 'PUT', 'DELETE']) assert.equal((await app.call(path, {}, cookie, method)).status, 403, `${method} ${path}`);
+  }
+  for (const path of ['/v1/engines', '/v1/engines/test', '/v1/evaluations', '/v1/lab/models']) {
+    assert.equal((await app.call(path, {}, cookie)).status, 403, path);
+  }
+  assert.equal(app.state.providerCalls, 0); assert.equal(app.state.rpcCalls.length, 0);
+});
+
+test('Professional console visibility follows live role, suspension and Colossus approval changes', async t => {
+  const app = await start(t); app.state.user.app_metadata.system_access.colossus = true;
+  const session = await app.sessions.create('professional-token'), cookie = { Cookie: 'colossus_session=' + session.id };
+  assert.equal((await app.call('/v1/control', undefined, cookie)).status, 200);
+  for (const patch of [{ role: 'participant' }, { disabled: true }, { system_access: { colossus: false } }]) {
+    const saved = structuredClone(app.state.user.app_metadata); Object.assign(app.state.user.app_metadata, patch);
+    for (const path of ['/v1/control', '/v1/control/organizations', '/v1/control/product-access', '/v1/monitoring']) assert.equal((await app.call(path, undefined, cookie)).status, 403, path);
+    assert.equal((await app.call('/v1/live-flow?scope=all', undefined, cookie)).status, 403);
+    app.state.user.app_metadata = saved;
+    assert.equal((await app.call('/v1/control', undefined, cookie)).status, 200);
+  }
+  assert.equal(app.state.providerCalls, 0); assert.equal(app.state.rpcCalls.length, 0);
+});
+
+test('viewing operations does not require an inference license or an enabled model group', async t => {
+  const app = await start(t); app.state.user.app_metadata.system_access.colossus = true;
+  await app.control.save('groups', { id: 'paused', name: 'Paused model group', memberIds: [professionalId], modelIds: ['astra-default'], enabled: false }, administrator);
+  await app.control.store.mutate(['accessPolicies/products'], () => [{ version: 1, enabled: true }]);
+  const session = await app.sessions.create('professional-token'), cookie = { Cookie: 'colossus_session=' + session.id };
+  for (const path of ['/app', '/session', '/v1/control', '/v1/control/product-access', '/v1/monitoring', '/v1/capabilities', '/v1/engines', '/v1/live-flow?scope=all']) {
+    assert.equal((await app.call(path, undefined, cookie)).status, 200, path);
+  }
+  assert.equal((await app.invoke()).status, 403);
   assert.equal(app.state.providerCalls, 0); assert.equal(app.state.rpcCalls.length, 0);
 });
 

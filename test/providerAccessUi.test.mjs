@@ -42,7 +42,7 @@ function fixture() {
   const context = { document, window: { addEventListener() {} }, location: { hash: '', replace: url => redirects.push(url) }, AbortController, URLSearchParams, Intl, loadAccountUpdates: () => accountUpdatesLoader(), Option: class extends Element { constructor(text, value) { super('option'); this.textContent = text; this.value = value; } }, Event: class {}, CustomEvent: class {}, setInterval() {}, clearInterval() {}, fetch: async (path, options) => { calls.push({ path, ...options, body: options.body && JSON.parse(options.body) }); return path === '/v1/capabilities' ? capabilityHandler(path, options) : path === '/v1/provider-access' ? personalHandler(path, options) : handler(path, options); } };
   // Keep browser startup out of the fixture; exercise the actual controls and async handlers.
   const source = script.replace("import('./account-updates.js')", 'loadAccountUpdates()').replace(/load\(\)\.then\(\(\) => \{[\s\S]*?\n\}\);\nlet monitoringLoading/, 'let monitoringLoading');
-  runInNewContext(source + '\nloadMonitoring = async () => {}; globalThis.ui = { loadUsers, displayAccount, clearUserAccess, clearPrivateState, controls, refreshEngineAccess, refreshPersonalProviderAccess, setAdmin() { account = { id: "admin/a", role: "admin", email: "admin@example.test" }; permissions = { admin: true }; accountVerified = true; controls(); } };', context);
+  runInNewContext(source + '\nloadMonitoring = async () => {}; globalThis.ui = { loadUsers, displayAccount, clearUserAccess, clearPrivateState, controls, refreshEngineAccess, refreshPersonalProviderAccess, setProfessional() { account = { id: "pro/a", role: "professional", email: "professional@example.test" }; permissions = { admin: false, operationsView: true }; accountVerified = true; controls(); }, setAdmin() { account = { id: "admin/a", role: "admin", email: "admin@example.test" }; permissions = { admin: true }; accountVerified = true; controls(); } };', context);
   context.ui.setAdmin();
   return { ui: context.ui, nodes, calls, redirects, handle: value => { handler = value; }, handleAccountUpdates: value => { accountUpdatesLoader = value; }, handleCapabilities: value => { capabilityHandler = value; }, handlePersonal: value => { personalHandler = value; }, catalog: detail => document.dispatchEvent({ type: 'colossus:catalog', detail }) };
 }
@@ -82,6 +82,20 @@ test('replacing the account discards an earlier pending account-updates mount', 
   second.resolve({ mountAccountUpdates: () => { mounts.push('current'); return () => {}; } }); await settled();
   first.resolve({ mountAccountUpdates: () => { mounts.push('previous'); return () => {}; } }); await settled();
   assert.deepEqual(mounts, ['current']);
+});
+
+test('Professional console controls expose operations and keep shared user and write controls unavailable', async () => {
+  const f = fixture(); f.ui.setProfessional();
+  assert.equal(f.nodes.get('room').hidden, false);
+  assert.equal(f.nodes.get('ops-refresh').hidden, false);
+  assert.equal(f.nodes.get('monitor-link').hidden, false);
+  assert.equal(f.nodes.get('monitoring').hidden, false);
+  assert.equal(f.nodes.get('access-link').hidden, true);
+  assert.equal(f.nodes.get('user-access').hidden, true);
+  assert.equal(f.nodes.get('ops-view-access').hidden, false);
+  for (const id of ['save-engine', 'test-draft', 'evaluate-button', 'confirm-access-change']) assert.equal(f.nodes.get(id).disabled, true, id);
+  assert.equal(f.nodes.get('user-search').querySelector('button').disabled, true);
+  await f.ui.loadUsers(); assert.equal(f.calls.length, 0);
 });
 
 test('provider controls wait for verified policy and permit editing the current admin grants while DeepSeek is off', async () => {

@@ -1,4 +1,5 @@
 import { fail } from './config.mjs';
+import { canViewOperations } from './consoleAccess.mjs';
 
 export const ASTRA_PRODUCTS = Object.freeze(['colossus', 'workflow', 'enigma', 'lab', 'evidence', 'observer']);
 const policyPath = 'accessPolicies/products';
@@ -44,7 +45,7 @@ export class ProductAccess {
     return identity.productAccess;
   }
   async snapshot(actor) {
-    admin(actor);
+    if (!canViewOperations(actor)) admin(actor);
     const policy = await this.policy();
     if (!this.control.enabled) return { policy, products: ASTRA_PRODUCTS, licenses: [] };
     return { policy, products: ASTRA_PRODUCTS, licenses: await this.store.list('productLicenses') };

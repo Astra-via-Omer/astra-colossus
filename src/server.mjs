@@ -26,6 +26,7 @@ import { ChristopherWorkspace } from './christopherWorkspace.mjs';
 import { christopherShell } from './christopherShell.mjs';
 import { ProductAccess } from './productAccess.mjs';
 import { LiveFlow } from './liveFlow.mjs';
+import { canViewOperations } from './consoleAccess.mjs';
 
 async function boundedJson(stream, limit, upstream = false) {
   const chunks = []; let size = 0;
@@ -85,7 +86,11 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
   const pendingCookie = (id, seconds) => `colossus_mfa_pending=${id}; HttpOnly; SameSite=Strict; Path=/session; Max-Age=${seconds}${config.production ? '; Secure' : ''}`;
   const sessionId = req => /(?:^|;\s*)colossus_session=([^;]+)/.exec(req.headers.cookie || '')?.[1];
   function requireConsoleAccess(identity) {
-    if (!['admin', 'participant'].includes(identity.role)) fail(403, 'access_denied', 'Colossus requires an active Astra admin or participant account with Colossus access approved.');
+    if (!['admin', 'professional', 'participant'].includes(identity.role)) fail(403, 'access_denied', 'Colossus requires an approved Astra administrator, Professional or participant account.');
+    return identity;
+  }
+  function requireConsoleView(identity) {
+    if (!canViewOperations(identity)) fail(403, 'admin_required', 'An Astra administrator or Professional account is required to view Colossus operations.');
     return identity;
   }
   function requireConsoleAdmin(identity) {
@@ -102,9 +107,9 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
   async function browserIdentity(req) { return requireConsoleAccess(await sessionIdentity(req)); }
   const hasRegistry = () => !!(config.engineBucket || (config.serviceKey && config.supabaseUrl) || (config.engineFile && !config.production));
   const profile = identity => ({ user: { id: identity.id, email: identity.email, name: identity.name, role: identity.role },
-    expiresAt: identity.expiresAt, landingPath: ['admin', 'participant'].includes(identity.role) ? '/app' : '/live',
+    expiresAt: identity.expiresAt, landingPath: ['admin', 'professional', 'participant'].includes(identity.role) ? '/app' : '/live',
     permissions: { run: ['admin', 'professional', 'participant'].includes(identity.role), create: identity.admin && hasRegistry(), test: identity.admin,
-      evaluate: identity.admin, manageUsers: identity.admin, monitoring: identity.admin, liveFlow: true } });
+      evaluate: identity.admin, manageUsers: identity.admin, operationsView: canViewOperations(identity), monitoring: canViewOperations(identity), liveFlow: true } });
   async function authenticate(req) {
     const bearer = /^Bearer (\S+)$/.exec(req.headers.authorization || '')?.[1];
     const clientHeader = req.headers['x-colossus-service-key'];
@@ -282,7 +287,7 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
         operation = 'engine_room';
         try {
           const identity = await sessionIdentity(req);
-          if (!['admin', 'participant'].includes(identity.role)) { res.writeHead(303, { Location: '/live' }); return res.end(); }
+          if (!['admin', 'professional', 'participant'].includes(identity.role)) { res.writeHead(303, { Location: '/live' }); return res.end(); }
           requireConsoleAccess(identity);
         }
         catch (error) {
@@ -334,7 +339,7 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
         res.setHeader('Set-Cookie', [cookie('', 0), pendingCookie('',0)]); return json(res, { signedOut: true });
       }
       if (url.pathname === '/v1/monitoring') {
-        operation = 'monitoring'; requireConsoleAdmin(await browserIdentity(req));
+        operation = 'monitoring'; requireConsoleView(await browserIdentity(req));
         if (method !== 'GET') fail(405, 'method_not_allowed', 'Use GET for usage monitoring.');
         const snapshot = await monitoring.snapshot(Number(url.searchParams.get('days') || 1), url.searchParams.get('userId') || '');
         if (control.enabled) { await control.ensure(); const models = await control.store.list('models'); snapshot.rates = models.map(model => ({ route: model.id, providerModel: model.model, rates: model.pricing })); }
@@ -349,10 +354,14 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
         return json(res, await control.savePersonalProviders(actor, await boundedJson(req, 4096)));
       }
       if (url.pathname === '/v1/control' || url.pathname.startsWith('/v1/control/')) {
-        operation = 'control_plane'; const actor = requireConsoleAdmin(await browserIdentity(req));
-        if (method === 'GET' && url.pathname === '/v1/control') return json(res, await control.snapshot());
-        if (method === 'GET' && url.pathname === '/v1/control/organizations') return json(res, { organizations: await control.store.organizations() });
-        if (method === 'GET' && url.pathname === '/v1/control/product-access') return json(res, await productAccess.snapshot(actor));
+        operation = 'control_plane'; const actor = await browserIdentity(req);
+        if (method === 'GET') {
+          requireConsoleView(actor);
+          if (url.pathname === '/v1/control') return json(res, await control.snapshot());
+          if (url.pathname === '/v1/control/organizations') return json(res, { organizations: await control.store.organizations() });
+          if (url.pathname === '/v1/control/product-access') return json(res, await productAccess.snapshot(actor));
+        }
+        requireConsoleAdmin(actor);
         if (!['POST', 'PATCH'].includes(method)) fail(405, 'method_not_allowed', 'Use the supported operations control method.');
         if (!(req.headers['content-type'] || '').startsWith('application/json')) fail(415, 'content_type', 'Use application/json.');
         const body = await boundedJson(req, 32768);
@@ -404,7 +413,9 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
         return json(res, { updated: true });
       }
       const identity = await authenticate(req);
-      await productAccess.authorize(identity, url.pathname.startsWith('/v1/christopher') ? 'christopher' : null);
+      const operationsMetadata = method === 'GET' && canViewOperations(identity) && identity.systemId === 'colossus'
+        && identity.productVerified === true && !identity.keyId && ['/v1/capabilities', '/v1/engines'].includes(url.pathname);
+      if (!operationsMetadata) await productAccess.authorize(identity, url.pathname.startsWith('/v1/christopher') ? 'christopher' : null);
       const activity = req.headers['x-colossus-activity'];
       if (activity !== undefined) {
         if (!identity.keyId || typeof activity !== 'string' || !/^[a-z][a-z0-9._:-]{0,119}$/.test(activity) || !activity.startsWith(identity.systemId + '.'))
@@ -413,11 +424,17 @@ export function createService(config, { fetcher = fetch, logger = entry => conso
       }
       if (method === 'GET' && url.pathname === '/v1/lab/models') return json(res, await control.labCatalog(identity));
       if (method === 'GET' && url.pathname === '/v1/capabilities') {
-        operation = 'capabilities'; return json(res, { service: 'colossus', admin: identity.admin,
+        let routes;
+        try { routes = await control.routes(identity); }
+        catch (error) {
+          if (!operationsMetadata || !['group_paused', 'organization_denied'].includes(error.code)) throw error;
+          routes = [];
+        }
+        operation = 'capabilities'; return json(res, { service: 'colossus', admin: identity.admin, operationsView: canViewOperations(identity),
           engineCreation: hasRegistry(),
           streaming: 'sse', realtimeSession: false,
           ...(isChristopherAdmin(identity) ? { christopher: { ...CHRISTOPHER, latestVersion: CHRISTOPHER_V2.version, versions: CHRISTOPHER_MODELS } } : {}),
-          routes: await control.routes(identity),
+          routes,
           observer: { status: config.media ? 'ready' : 'unconfigured', engine: 'broadcast-observation@1.0.0', model: config.media?.model, input: 'PCM16 16 kHz mono WAV and timestamped JPEG frames', maxSampleMs: 4000, verification: 'Observation and claim detection only; no truth score.' } });
       }
       if (method === 'GET' && url.pathname === '/v1/models') { operation = 'models'; return json(res, { object: 'list', data: (await control.routes(identity)).flatMap(route => [...new Set([route.id, route.model])].filter(name => name === route.id || route.id === 'astra-default').map(name => ({ id: name, object: 'model', owned_by: 'colossus', capabilities: route.capabilities, task: route.task }))) }); }

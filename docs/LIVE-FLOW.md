@@ -11,7 +11,7 @@ An alias can have multiple observed calls within one process.
 | Current protected account role | Available scopes |
 | --- | --- |
 | Global Astra administrator | Whole system; own activity |
-| Astra-via Professional | Active approved organization; active explicitly assigned group; own activity |
+| Astra-via Professional | Whole system; active approved organization; active explicitly assigned group; own activity |
 | Participant, reader, viewer | Own activity |
 
 The server derives organization and group IDs from the existing authoritative
@@ -21,7 +21,7 @@ tenant ID. Account state and memberships are rechecked for every snapshot.
 Disabled accounts, revoked product approval, inactive organizations/groups and
 membership failures deny access. Organization/group activity includes recorded
 requests attributed to that scope, rather than all historical activity of anyone
-who has ever belonged to it. A user retains access to their own observed activity.
+who has ever belonged to it. A user retains access to their own observed activity. Whole-system access requires a current administrator or Professional role plus Colossus approval; demotion or approval revocation removes that access on the next read.
 
 Browser access uses the existing encrypted, host-only session cookie. Bearer
 tokens and service keys cannot read the page's data endpoint. Approved users who
@@ -79,7 +79,7 @@ checkpoint is awaited before returning, including on request failure, so an idle
 Cloud Run instance does not suspend unfinished publishing.
 
 Publishing failures are counted and never turn successful inference into an
-error. An administrator sees the failure count for the serving instance. This
+error. An administrator or Professional sees the failure count for the serving instance. This
 counter is not a fleet-wide guarantee of complete capture. Shared read failures
 return an error rather than an empty success. The browser clears its previous
 scope when authorization changes. Immutable usage history continues in the
@@ -119,7 +119,7 @@ synthetic accounts and periodically emits clearly labelled synthetic checkpoints
 through the monitor. It never loads deployment credentials or calls an external
 service. Sign in with `admin@example.invalid`, `professional@example.invalid`,
 `alice@example.invalid` or `bob@example.invalid`; password `preview-only`. The
-Professional has the Research organization/group scopes; Alice and Bob have
+Professional has the whole-system and Research organization/group scopes; Alice and Bob have
 personal scope only. `PREVIEW_PORT` changes the loopback port. Stop the server
 with Ctrl-C. This fixture is a developer script and is excluded from the image.
 
