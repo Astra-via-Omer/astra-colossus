@@ -63,6 +63,11 @@ export class ControlStore {
     if (value?.nextPageToken && !allowMore) fail(503, 'control_limit', 'This registry exceeds its page limit. Archive unused records before adding more.');
     return (value?.documents || []).map(doc => JSON.parse(doc.fields.json.stringValue));
   }
+  async pendingAccountEvents(limit=20) {
+    if(!this.shared)return [...this.memory.entries()].filter(([path,value])=>path.startsWith('accountEventOutbox/')&&value.data.pending===true).slice(0,limit).map(([,value])=>structuredClone(value.data));
+    const rows=await this.request(`${this.root}:runQuery`,{method:'POST',body:JSON.stringify({structuredQuery:{from:[{collectionId:'accountEventOutbox'}],where:{fieldFilter:{field:{fieldPath:'pending'},op:'EQUAL',value:{booleanValue:true}}},limit}})});
+    return (rows||[]).filter(row=>row.document).map(row=>JSON.parse(row.document.fields.json.stringValue));
+  }
   async commit(changes) {
     if (!this.shared) {
       if (changes.some(change => (this.memory.get(change.path)?.version || null) !== change.version)) return false;
@@ -71,6 +76,7 @@ export class ControlStore {
     }
     const response = await this.request(`${this.root}:commit`, { method: 'POST', body: JSON.stringify({ writes: changes.map(change => ({
       update: { name: `${this.root}/${change.path}`, fields: { json: { stringValue: JSON.stringify(change.data) },
+        ...(change.path.split('/').at(-2) === 'accountEventOutbox' ? {pending:{booleanValue:change.data.pending===true}} : {}),
         ...(change.path.split('/').at(-2) === 'liveFlow' && change.data.expiresAt ? { expiresAt: { timestampValue: change.data.expiresAt } } : {}) } },
       currentDocument: change.version ? { updateTime: change.version } : { exists: false },
     })) }) });
