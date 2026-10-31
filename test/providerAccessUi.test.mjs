@@ -35,21 +35,54 @@ function fixture() {
   const events = {};
   const document = { body: new Element('body'), visibilityState: 'visible', getElementById: id => nodes.get(id), createElement: tag => new Element(tag), addEventListener: (type, listener) => { (events[type] ||= []).push(listener); }, dispatchEvent: event => { for (const listener of events[event.type] || []) listener(event); }, querySelectorAll: selector => selector.includes('#user-rows') ? nodes.get('user-rows').querySelectorAll(selector) : [] };
   let handler = () => { throw Error('Unexpected request'); };
+  let accountUpdatesLoader = async () => ({ mountAccountUpdates: () => () => {} });
   let capabilityHandler = () => response({ admin: true, routes: eligibleRoutes });
   let personalHandler = () => response({ googleEnabled: true, deepseekEnabled: true, deepseekGloballyEnabled: false, effectiveDeepseekEnabled: false });
   const calls = [], redirects = [];
-  const context = { document, window: { addEventListener() {} }, location: { hash: '', replace: url => redirects.push(url) }, AbortController, URLSearchParams, Intl, Option: class extends Element { constructor(text, value) { super('option'); this.textContent = text; this.value = value; } }, Event: class {}, CustomEvent: class {}, setInterval() {}, clearInterval() {}, fetch: async (path, options) => { calls.push({ path, ...options, body: options.body && JSON.parse(options.body) }); return path === '/v1/capabilities' ? capabilityHandler(path, options) : path === '/v1/provider-access' ? personalHandler(path, options) : handler(path, options); } };
+  const context = { document, window: { addEventListener() {} }, location: { hash: '', replace: url => redirects.push(url) }, AbortController, URLSearchParams, Intl, loadAccountUpdates: () => accountUpdatesLoader(), Option: class extends Element { constructor(text, value) { super('option'); this.textContent = text; this.value = value; } }, Event: class {}, CustomEvent: class {}, setInterval() {}, clearInterval() {}, fetch: async (path, options) => { calls.push({ path, ...options, body: options.body && JSON.parse(options.body) }); return path === '/v1/capabilities' ? capabilityHandler(path, options) : path === '/v1/provider-access' ? personalHandler(path, options) : handler(path, options); } };
   // Keep browser startup out of the fixture; exercise the actual controls and async handlers.
-  const source = script.replace(/^import \{mountAccountUpdates\} from ['\"].*?['\"];?\n/m,'const mountAccountUpdates=()=>()=>{};\n').replace(/load\(\)\.then\(\(\) => \{[\s\S]*?\n\}\);\nlet monitoringLoading/, 'let monitoringLoading');
-  runInNewContext(source + '\nloadMonitoring = async () => {}; globalThis.ui = { loadUsers, displayAccount, clearUserAccess, controls, refreshEngineAccess, refreshPersonalProviderAccess, setAdmin() { account = { id: "admin/a", role: "admin", email: "admin@example.test" }; permissions = { admin: true }; accountVerified = true; controls(); } };', context);
+  const source = script.replace("import('./account-updates.js')", 'loadAccountUpdates()').replace(/load\(\)\.then\(\(\) => \{[\s\S]*?\n\}\);\nlet monitoringLoading/, 'let monitoringLoading');
+  runInNewContext(source + '\nloadMonitoring = async () => {}; globalThis.ui = { loadUsers, displayAccount, clearUserAccess, clearPrivateState, controls, refreshEngineAccess, refreshPersonalProviderAccess, setAdmin() { account = { id: "admin/a", role: "admin", email: "admin@example.test" }; permissions = { admin: true }; accountVerified = true; controls(); } };', context);
   context.ui.setAdmin();
-  return { ui: context.ui, nodes, calls, redirects, handle: value => { handler = value; }, handleCapabilities: value => { capabilityHandler = value; }, handlePersonal: value => { personalHandler = value; }, catalog: detail => document.dispatchEvent({ type: 'colossus:catalog', detail }) };
+  return { ui: context.ui, nodes, calls, redirects, handle: value => { handler = value; }, handleAccountUpdates: value => { accountUpdatesLoader = value; }, handleCapabilities: value => { capabilityHandler = value; }, handlePersonal: value => { personalHandler = value; }, catalog: detail => document.dispatchEvent({ type: 'colossus:catalog', detail }) };
 }
 function rowControls(f) {
   const row = f.nodes.get('user-rows').children[0], cell = row.children[3];
   const inputs = cell.querySelectorAll('input'), buttons = cell.querySelectorAll('button');
   return { row, cell, google: inputs[0], deepseek: inputs[1], save: buttons[0], cancel: buttons[1] };
 }
+
+test('an unavailable account-updates module leaves verified administrator controls usable', async () => {
+  const f = fixture(); f.handleAccountUpdates(async () => { throw Error('Module unavailable'); });
+  f.ui.displayAccount({ user: { id: 'admin/a', email: 'admin@example.test', role: 'admin' }, expiresAt: '2100-01-01' });
+  await settled(); f.ui.controls();
+  assert.equal(f.nodes.get('room').hidden, false);
+  assert.equal(f.nodes.get('user-access').hidden, false);
+  assert.equal(f.nodes.get('ops-refresh').hidden, false);
+  assert.equal(f.nodes.get('account-updates').textContent, 'Account updates are unavailable.');
+  f.handle(() => directory()); await f.ui.loadUsers();
+  assert.equal(f.nodes.get('user-rows').children.length, 1);
+  assert.equal(f.redirects.length, 0);
+});
+
+test('a delayed account-updates module cannot mount after private state is cleared', async () => {
+  const f = fixture(), loading = deferred(); let mounts = 0;
+  f.handleAccountUpdates(() => loading.promise);
+  f.ui.displayAccount({ user: { id: 'admin/a', email: 'admin@example.test', role: 'admin' }, expiresAt: '2100-01-01' });
+  f.ui.clearPrivateState();
+  loading.resolve({ mountAccountUpdates: () => { mounts++; return () => {}; } }); await settled();
+  assert.equal(mounts, 0); assert.equal(f.nodes.get('room').hidden, true);
+});
+
+test('replacing the account discards an earlier pending account-updates mount', async () => {
+  const f = fixture(), first = deferred(), second = deferred(); let loads = 0; const mounts = [];
+  f.handleAccountUpdates(() => ++loads === 1 ? first.promise : second.promise);
+  f.ui.displayAccount({ user: { id: 'admin/a', email: 'admin@example.test', role: 'admin' }, expiresAt: '2100-01-01' });
+  f.ui.displayAccount({ user: { id: 'admin/b', email: 'other@example.test', role: 'admin' }, expiresAt: '2100-01-01' });
+  second.resolve({ mountAccountUpdates: () => { mounts.push('current'); return () => {}; } }); await settled();
+  first.resolve({ mountAccountUpdates: () => { mounts.push('previous'); return () => {}; } }); await settled();
+  assert.deepEqual(mounts, ['current']);
+});
 
 test('provider controls wait for verified policy and permit editing the current admin grants while DeepSeek is off', async () => {
   const f = fixture(), waiting = deferred(); f.handle(() => waiting.promise);

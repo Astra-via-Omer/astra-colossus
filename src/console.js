@@ -1,6 +1,5 @@
 const $ = id => document.getElementById(id);
-import {mountAccountUpdates} from './account-updates.js';
-let stopAccountUpdates=()=>{},updatesAccount='';
+let stopAccountUpdates=()=>{},updatesAccount='',updatesVersion=0;
 let engines = [], lastResult, busy = false, permissions, account, accountVerified = false, signingOut = false;
 let authController = new AbortController(), userOffset = 0, userCount = 0, pendingChange, checkingAccount = false;
 let providerSettings, usersLoading = false, userAccessEpoch = 0, usersRequestVersion = 0;
@@ -46,7 +45,7 @@ async function api(path, body, method = body === undefined ? 'GET' : 'POST') {
   return data;
 }
 function clearPrivateState() {
-  stopAccountUpdates();updatesAccount='';
+  stopAccountUpdates();updatesAccount='';updatesVersion++;
   account = undefined; accountVerified = false; permissions = undefined; engines = []; lastResult = undefined; pendingChange = undefined;
   $('run').reset(); $('create').reset(); $('cases').value = '';
   $('engine').replaceChildren(); $('model').replaceChildren(); clearUserAccess();
@@ -61,11 +60,24 @@ function clearPrivateState() {
 function endSession(reason) {
   authController.abort(); clearPrivateState(); location.replace(`/?access=${reason}`);
 }
+async function connectAccountUpdates(host) {
+  const version = ++updatesVersion;
+  stopAccountUpdates();
+  // The console is a classic script shared with operations.js. Load the optional
+  // account feed separately so its module cannot prevent console startup.
+  try {
+    const { mountAccountUpdates } = await import('./account-updates.js');
+    if (version !== updatesVersion || !accountVerified || signingOut || authController.signal.aborted) return;
+    stopAccountUpdates = mountAccountUpdates(host);
+  } catch {
+    if (version === updatesVersion) host.textContent = 'Account updates are unavailable.';
+  }
+}
 function displayAccount(profile) {
   if (authController.signal.aborted) return;
   if (account && (account.id !== profile.user.id || account.role !== profile.user.role)) clearUserAccess();
   account = profile.user; accountVerified = true;
-  if(updatesAccount!==account.id&&$('account-updates')){stopAccountUpdates();updatesAccount=account.id;stopAccountUpdates=mountAccountUpdates($('account-updates'));}
+  if(updatesAccount!==account.id&&$('account-updates')){updatesAccount=account.id;void connectAccountUpdates($('account-updates'));}
   $('greeting').textContent = account.name ? `Welcome back, ${account.name}.` : 'Welcome back.';
   $('account-email').textContent = account.email;
   if ($('ops-account')) $('ops-account').textContent = account.name || account.email;

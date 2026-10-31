@@ -20,6 +20,11 @@ const app = createService(config, { logger: () => {}, fetcher: async (url, optio
     const name = options.headers.Authorization.replace('Bearer preview-', '');
     return Response.json(users[name] || {}, { status: users[name] ? 200 : 401 });
   }
+  if (url.endsWith('/rest/v1/rpc/astra_list_users_v2')) {
+    const { p_search = '', p_offset = 0 } = JSON.parse(options.body);
+    return Response.json(Object.values(users).filter(user => user.email.includes(p_search.toLowerCase())).slice(p_offset, p_offset + 50)
+      .map(user => ({ user_id: user.id, email: user.email, app_role: user.app_metadata.role, account_status: 'Active', last_sign_in_at: null })));
+  }
   if (url.includes('/auth/v1/token')) {
     const input = JSON.parse(options.body), name = input.email.split('@')[0];
     return input.password === 'preview-only' && users[name]
