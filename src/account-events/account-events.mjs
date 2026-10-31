@@ -22,6 +22,8 @@ export async function eventRpc({url,anonKey,token},name,body,fetcher=fetch) {
   try {response=await fetcher(new URL('/rest/v1/rpc/'+name,origin),{method:'POST',redirect:'error',cache:'no-store',
     headers:{apikey:anonKey,Authorization:'Bearer '+token,'Content-Type':'application/json'},body:JSON.stringify(body),signal:AbortSignal.timeout(10000)});}
   catch {throw new AccountEventsError('Account updates are temporarily unavailable. Please retry.');}
+  // PostgREST returns no body for the void acknowledgement RPC.
+  if(response.status===204&&name==='astra_events_read')return null;
   const data=await boundedEventJson(response);
   if(!response.ok){
     if(response.status===401)throw new AccountEventsError('Sign in again to see your account updates.',401);
