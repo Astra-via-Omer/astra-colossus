@@ -60,7 +60,7 @@ already permits checkpoint writes; no provider access, inference setting or new
 service is required. See [Live flow](docs/LIVE-FLOW.md) for the exact commands,
 account scopes, operational bounds and rollback behavior.
 
-The browser console and `GET /v1/monitoring` require a current, enabled Astra admin account with Colossus access. Account bearer calls from Enigma retain existing inference access and are recorded against the verified user. Service credentials cannot read browser monitoring.
+The full operations console and `GET /v1/monitoring` allow current, enabled Astra administrators and Professionals with Colossus approval. Professionals have read-only registry, license and usage views; shared user controls and all configuration writes remain administrator-only. No role, approval, membership, database migration or infrastructure permission is changed by deploying this policy. Account bearer calls from Enigma retain existing inference access and are recorded against the verified user. Service credentials cannot read browser monitoring.
 
 Usage history defaults to the existing private engine bucket under `usage/v1/`. No new database migration or IAM scope is needed with that bucket. A separate `COLOSSUS_USAGE_BUCKET` needs Object Viewer and Object Creator for the runtime identity. Production refuses inference if its start record cannot be stored. Completion-write failures preserve the paid result, emit a sanitized operational error and leave an incomplete start record. Immutable history is shared across instances, including restarts. The current lifecycle rule applies only to sessions, so usage retention requires a separate operational policy.
 

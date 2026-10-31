@@ -1,4 +1,5 @@
 import { fail } from './config.mjs';
+import { canViewOperations } from './consoleAccess.mjs';
 
 const ident = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,119}$/.test(value);
 const short = (value, size = 160) => typeof value === 'string' ? value.slice(0, size) : '';
@@ -68,9 +69,12 @@ export class LiveFlow {
   async permissions(identity) {
     if (identity.kind !== 'account') fail(403, 'live_account_required', 'Live activity requires a signed-in Astra account.');
     if (identity.admin && identity.astraAdmin) return { available: [{ kind: 'all', id: 'all', name: 'Whole system' }, { kind: 'self', id: identity.id, name: 'My activity' }], group: null };
-    const access = await this.control.groupAccess(identity, false);
-    const group = access.group;
-    const available = [];
+    let group = null;
+    try { ({ group } = await this.control.groupAccess(identity, false)); }
+    catch (error) {
+      if (!canViewOperations(identity) || !['group_paused', 'organization_denied'].includes(error.code)) throw error;
+    }
+    const available = canViewOperations(identity) ? [{ kind: 'all', id: 'all', name: 'Whole system' }] : [];
     if (identity.role === 'professional') {
       const organizationId = await this.control.store.organizationFor(identity.id);
       if (organizationId) available.push({ kind: 'organization', id: organizationId, name: 'Approved organization' });
@@ -114,13 +118,13 @@ export class LiveFlow {
     return { schemaVersion: 1, generatedAt: new Date(at).toISOString(), windowStart: new Date(cutoff).toISOString(), refreshMs: 2000,
       source: this.control.store.shared ? 'shared_gateway_telemetry' : 'local_preview_telemetry', scope: { kind: scope.kind, name: scope.name },
       availableScopes: available.map(({ kind, name }) => ({ kind, name })),
-      viewer: { id: identity.id, role: identity.role, email: identity.email, console: ['admin', 'participant'].includes(identity.role) },
+      viewer: { id: identity.id, role: identity.role, email: identity.email, console: ['admin', 'professional', 'participant'].includes(identity.role) },
       limited: recent.length > LIVE_LIMIT, processLimit: LIVE_LIMIT, records,
       catalog: { models: visibleModels.map(m => ({ id: m.id, name: short(m.name), model: short(m.model), providerId: m.providerId,
         enabled: Boolean(m.enabled && providers.find(p => p.id === m.providerId)?.enabled), task: short(m.task, 40), native: m.native || null })),
         providers: providers.filter(p => providerIds.has(p.id)).map(p => ({ id: p.id, name: short(p.name), kind: short(p.kind, 40), enabled: Boolean(p.enabled), native: p.native || null })),
         systems: systems.filter(s => scope.kind === 'all' || systemIds.has(s.id)).map(s => ({ id: s.id, name: short(s.name), enabled: Boolean(s.enabled) })) },
-      integrity: { stalledAfterMs: LIVE_STALE_MS, telemetryFailuresOnThisInstance: identity.admin ? this.failures : undefined,
+      integrity: { stalledAfterMs: LIVE_STALE_MS, telemetryFailuresOnThisInstance: canViewOperations(identity) ? this.failures : undefined,
         interpretation: 'Observed Colossus admissions and calls. Only new activity recorded after this feature is deployed appears here. Browser navigation, provider-internal work and packet positions are not measured.' } };
   }
 }

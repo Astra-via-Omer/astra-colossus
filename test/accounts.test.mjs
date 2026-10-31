@@ -185,7 +185,7 @@ test('approved participants sign in and run assigned engines while every adminis
   app.state.user.user_metadata = { role: 'admin' };
   const { cookie, response } = await app.login(), profile = await response.json();
   assert.equal(profile.user.role, 'participant');
-  assert.deepEqual(profile.permissions, { run: true, create: false, test: false, evaluate: false, manageUsers: false, monitoring: false, liveFlow: true });
+  assert.deepEqual(profile.permissions, { run: true, create: false, test: false, evaluate: false, manageUsers: false, operationsView: false, monitoring: false, liveFlow: true });
   assert.equal((await app.call('/app', cookie)).status, 200);
   assert.equal((await app.call('/session', cookie)).status, 200);
   assert.equal((await app.call('/v1/engines', cookie)).status, 200);

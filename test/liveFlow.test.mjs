@@ -54,25 +54,26 @@ test('private page and feed require a current account cookie, not gateway keys o
   assert.equal((await fetch(app.base + '/live', { redirect: 'manual' })).status, 303);
   for (const bearer of ['admin-token', 'private-provider-key']) assert.equal((await fetch(app.base + '/v1/live-flow', { headers: { Authorization: 'Bearer ' + bearer } })).status, 401);
   assert.equal((await app.get('/live', 'pro')).status, 200);
-  assert.equal((await app.get('/app', 'pro')).headers.get('location'), '/live');
-  assert.equal((await app.get('/v1/control', 'pro')).status, 403);
+  assert.equal((await app.get('/app', 'pro')).status, 200);
+  assert.equal((await app.get('/v1/control', 'pro')).status, 200);
   const response = await app.get('/v1/live-flow'); assert.equal(response.status, 200); assert.equal(response.headers.get('cache-control'), 'no-store');
   assert.equal((await app.get('/v1/live-flow', 'alice', { method: 'POST' })).status, 405);
   assert.equal((await app.get('/v1/live-flow?userId=' + ids.bob, 'alice')).status, 400);
   assert.equal((await app.get('/v1/live-flow?scope=all', 'alice')).status, 403);
 });
 
-test('administrators see all activity, Professionals see only approved organization/group, and users see themselves', async t => {
+test('administrators and Professionals can view system activity; scoped views still enforce membership', async t => {
   const app = await start(t), own = record('pro'), teammate = record('alice'), other = record('bob', { groupId: 'beta', organizationId: 'other' });
   for (const r of [own, teammate, other]) await app.liveFlow.observe(r);
   const get = async (name, scope = '') => { const response = await app.get('/v1/live-flow' + (scope ? '?scope=' + scope : ''), name); assert.equal(response.status, 200); return response.json(); };
   assert.equal((await get('admin')).records.length, 3);
-  const pro = await get('pro'); assert.equal(pro.scope.kind, 'organization'); assert.deepEqual(new Set(pro.records.map(r => r.actor.id)), new Set([ids.pro, ids.alice]));
+  const pro = await get('pro'); assert.equal(pro.scope.kind, 'all'); assert.equal(pro.records.length, 3);
+  const organization = await get('pro', 'organization'); assert.deepEqual(new Set(organization.records.map(r => r.actor.id)), new Set([ids.pro, ids.alice]));
   assert.equal((await get('pro', 'group')).records.length, 2);
   assert.equal((await get('pro', 'self')).records.length, 1);
   const alice = await get('alice'); assert.equal(alice.scope.kind, 'self'); assert.equal(alice.records.length, 1); assert.equal(alice.records[0].actor.id, ids.alice);
   assert(!JSON.stringify(alice).includes('bob@example.invalid'));
-  assert.equal((await app.get('/v1/live-flow?scope=all', 'pro')).status, 403);
+  assert.equal((await app.get('/v1/live-flow?scope=all', 'pro')).status, 200);
   assert.equal((await app.get('/v1/live-flow?scope=organization', 'bob')).status, 403);
 });
 

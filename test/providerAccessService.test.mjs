@@ -355,7 +355,7 @@ test('Professional accounts retain inference access and obey their Google provid
   await saveUser(app, userId, false, false);
   await denied(await app.call('/v1/chat/completions', chat, { token: 'participant-token', cookie: false }), 403, 'provider_access_denied');
   assert.equal(app.requests.length, before);
-  await denied(await app.call('/v1/control/provider-settings', { deepseekEnabled: true, expectedUpdatedAt: null }, { token: 'participant-token' }), 403, 'access_denied');
+  await denied(await app.call('/v1/control/provider-settings', { deepseekEnabled: true, expectedUpdatedAt: null }, { token: 'participant-token' }), 403, 'admin_required');
 });
 
 test('production account approval permits only official DeepSeek API routes and preparation cannot bypass a pause', async t => {

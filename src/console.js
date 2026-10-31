@@ -6,16 +6,19 @@ let providerSettings, usersLoading = false, userAccessEpoch = 0, usersRequestVer
 let engineAccessVersion = 0;
 let personalAccessVersion = 0;
 function controls() {
-  const connected = !!account && accountVerified && ['admin', 'participant'].includes(account.role), admin = connected && account.role === 'admin' && !!permissions?.admin;
+  const connected = !!account && accountVerified && ['admin', 'professional', 'participant'].includes(account.role), admin = connected && account.role === 'admin' && !!permissions?.admin;
+  const operations = connected && (admin || account.role === 'professional');
   document.body.dataset.consoleRole = connected ? account.role : 'checking';
   $('account').hidden = !account; $('room').hidden = !connected;
-  $('access-link').hidden = !connected; $('user-access').hidden = !admin;
+  $('access-link').hidden = !connected || account.role === 'professional'; $('user-access').hidden = !admin;
   $('access-link').querySelector('span:last-child').textContent = admin ? 'Users & access' : 'My account';
-  $('ops-role').textContent = connected ? (admin ? 'Administrator' : 'Participant') : 'Verifying access';
-  $('ops-refresh').hidden = !admin;
+  $('ops-profile').href = admin ? '#user-access' : '#account';
+  $('ops-role').textContent = connected ? (admin ? 'Administrator' : account.role === 'professional' ? 'Astra-via Professional · View only' : 'Participant') : 'Verifying access';
+  $('ops-refresh').hidden = !operations;
+  $('ops-view-access').hidden = !connected || account.role !== 'professional';
   $('engine-studio-description').textContent = admin ? 'Run source validation, publish versioned review instructions and evaluate bounded fixtures.' : 'Run source validation and download traceable results.';
-  $('monitor-link').hidden = !admin; $('monitoring').hidden = !admin;
-  $('create').closest('section').hidden = !admin; $('evaluate').closest('section').hidden = !admin;
+  $('monitor-link').hidden = !operations; $('monitoring').hidden = !operations;
+  $('create').closest('section').hidden = !operations; $('evaluate').closest('section').hidden = !operations;
   $('run').querySelector('button').disabled = busy || !connected;
   $('save-engine').disabled = busy || !admin || !permissions?.engineCreation;
   $('test-draft').disabled = busy || !admin; $('evaluate-button').disabled = busy || !admin;
@@ -85,6 +88,7 @@ function displayAccount(profile) {
   $('account-role').textContent = `Astra ${account.role}`;
   $('account-permissions').textContent = account.role === 'admin'
     ? 'You can monitor usage and costs across all accounts, run engines, create and test versions, evaluate fixtures and manage shared user access.'
+    : account.role === 'professional' ? 'You can view Colossus operations, models, groups, providers, API access and costs. Configuration and shared user management require an administrator. Your existing model and product grants still control engine runs.'
     : 'You can run saved engine versions and download your results. An Astra admin can create, test and evaluate engines.';
   $('account-expiry').textContent = `This Colossus session ends at ${new Date(profile.expiresAt).toLocaleTimeString()}. Sign in again to continue after it expires.`;
 }
@@ -507,7 +511,7 @@ function renderMonitoring(data) {
   document.dispatchEvent(new CustomEvent('colossus:usage', { detail: data }));
 }
 async function loadMonitoring() {
-  if (!accountVerified || account?.role !== 'admin' || authController.signal.aborted) return;
+  if (!accountVerified || !['admin', 'professional'].includes(account?.role) || authController.signal.aborted) return;
   if (monitoringLoading) { monitoringQueued = true; return; }
   monitoringQueued = false;
   monitoringLoading = true; $('monitor-refresh').disabled = true;
